@@ -287,7 +287,6 @@ FAILING_FULL_API = [
             "LSTM",
             "MaxPool1D",
             "MaxPool3D",
-            "SeparableConv1D",
             "SimpleRNN",
         ],
         "target_backends": "tflite",
