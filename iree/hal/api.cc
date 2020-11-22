@@ -1124,6 +1124,39 @@ IREE_API_EXPORT iree_status_t IREE_API_CALL iree_hal_buffer_view_shape(
   return iree_ok_status();
 }
 
+IREE_API_EXPORT iree_status_t IREE_API_CALL iree_hal_buffer_view_reshape(
+    iree_hal_buffer_view_t* buffer_view, const iree_hal_dim_t* shape,
+    iree_host_size_t shape_rank) {
+  IREE_ASSERT_ARGUMENT(buffer_view);
+  IREE_ASSERT_ARGUMENT(shape);
+
+  if (shape_rank != buffer_view->shape_rank) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "buffer view reshapes must have the same rank; "
+                            "target=%zu, existing=%zu",
+                            shape_rank, buffer_view->shape_rank);
+  }
+
+  iree_device_size_t new_element_count = 1;
+  for (iree_host_size_t i = 0; i < shape_rank; ++i) {
+    new_element_count *= shape[i];
+  }
+  iree_device_size_t old_element_count =
+      iree_hal_buffer_view_element_count(buffer_view);
+  if (new_element_count != old_element_count) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "buffer view reshapes must have the same element "
+                            "count; target=%zu, existing=%zu",
+                            new_element_count, old_element_count);
+  }
+
+  for (iree_host_size_t i = 0; i < shape_rank; ++i) {
+    buffer_view->shape[i] = shape[i];
+  }
+
+  return iree_ok_status();
+}
+
 IREE_API_EXPORT iree_hal_element_type_t IREE_API_CALL
 iree_hal_buffer_view_element_type(const iree_hal_buffer_view_t* buffer_view) {
   IREE_ASSERT_ARGUMENT(buffer_view);
