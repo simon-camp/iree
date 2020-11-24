@@ -544,16 +544,6 @@ iree_e2e_cartesian_product_test_suite(
 # reasonable tradeoff between shard startup overhead and critical path test
 # latency.
 
-# TODO(#3810) 'multiply' outputs all zeros when compiled with other functions.
-VMLA_FAILING_MULTIPLE = VMLA_FAILING + ["multiply"]
-
-# TODO(#3810) Including 'square' causes error: Recieved signal 11.
-# @unused
-LLVM_FAILING_MULTIPLE = LLVM_FAILING + ["square"]
-
-# TODO(#3810) Including 'square' causes error: Recieved signal 11.
-VULKAN_FAILING_MULTIPLE = VULKAN_FAILING + ["square"]
-
 [
     iree_py_test(
         name = "math_tests_multiple__{}".format(target_backend),
@@ -573,9 +563,9 @@ VULKAN_FAILING_MULTIPLE = VULKAN_FAILING + ["square"]
     )
     for target_backend, functions in dict(
         # TODO(#2673): enable LLVM AOT for these tests. JIT is deprecated.
-        # iree_llvmjit = set_difference(TF_MATH_FUNCTIONS, LLVM_FAILING_MULTIPLE),
-        iree_vmla = set_difference(TF_MATH_FUNCTIONS, VMLA_FAILING_MULTIPLE),
-        iree_vulkan = set_difference(TF_MATH_FUNCTIONS, VULKAN_FAILING_MULTIPLE),
+        # iree_llvmjit = set_difference(TF_MATH_FUNCTIONS, LLVM_FAILING),
+        iree_vmla = set_difference(TF_MATH_FUNCTIONS, VMLA_FAILING),
+        iree_vulkan = set_difference(TF_MATH_FUNCTIONS, VULKAN_FAILING),
         tf = TF_MATH_FUNCTIONS,
         tflite = set_difference(TF_MATH_FUNCTIONS, TFLITE_FAILING),
     ).items()
@@ -785,9 +775,6 @@ iree_e2e_cartesian_product_test_suite(
 # reasonable tradeoff between shard startup overhead and critical path test
 # latency.
 
-# TODO(#3810) 'multiply' outputs all zeros when compiled with other functions.
-VMLA_FAILING_DYNAMIC_MULTIPLE = VMLA_FAILING_DYNAMIC + ["multiply"]
-
 [
     iree_py_test(
         name = "math_dynamic_dims_tests_multiple__{}".format(target_backend),
@@ -808,7 +795,7 @@ VMLA_FAILING_DYNAMIC_MULTIPLE = VMLA_FAILING_DYNAMIC + ["multiply"]
     for target_backend, functions in dict(
         # TODO(#2673): enable LLVM AOT for these tests. JIT is deprecated.
         # iree_llvmjit = set_difference(TF_MATH_FUNCTIONS, LLVM_FAILING_DYNAMIC),
-        iree_vmla = set_difference(TF_MATH_FUNCTIONS, VMLA_FAILING_DYNAMIC_MULTIPLE),
+        iree_vmla = set_difference(TF_MATH_FUNCTIONS, VMLA_FAILING_DYNAMIC),
         iree_vulkan = set_difference(TF_MATH_FUNCTIONS, VULKAN_FAILING_DYNAMIC),
         tf = TF_MATH_FUNCTIONS,
     ).items()
@@ -955,16 +942,6 @@ iree_e2e_cartesian_product_test_suite(
 # reasonable tradeoff between shard startup overhead and critical path test
 # latency.
 
-# TODO(#3810) 'multiply' outputs all zeros when compiled with other functions.
-VMLA_FAILING_COMPLEX_MULTIPLE = VMLA_FAILING_COMPLEX + ["multiply"]
-
-# TODO(#3810) Including 'square' causes error: Recieved signal 11.
-# @unused
-LLVM_FAILING_COMPLEX_MULTIPLE = LLVM_FAILING_COMPLEX + ["square"]
-
-# TODO(#3810) Including 'square' causes error: Recieved signal 11.
-VULKAN_FAILING_COMPLEX_MULTIPLE = VULKAN_FAILING_COMPLEX + ["square"]
-
 [
     iree_py_test(
         name = "math_complex_tests_multiple__{}".format(target_backend),
@@ -984,9 +961,9 @@ VULKAN_FAILING_COMPLEX_MULTIPLE = VULKAN_FAILING_COMPLEX + ["square"]
     )
     for target_backend, functions in dict(
         # TODO(#2673): enable LLVM AOT for these tests. JIT is deprecated.
-        # iree_llvmjit = set_difference(TF_MATH_FUNCTIONS, LLVM_FAILING_COMPLEX_MULTIPLE),
-        iree_vmla = set_difference(TF_MATH_FUNCTIONS, VMLA_FAILING_COMPLEX_MULTIPLE),
-        iree_vulkan = set_difference(TF_MATH_FUNCTIONS, VULKAN_FAILING_COMPLEX_MULTIPLE),
+        # iree_llvmjit = set_difference(TF_MATH_FUNCTIONS, LLVM_FAILING_COMPLEX),
+        iree_vmla = set_difference(TF_MATH_FUNCTIONS, VMLA_FAILING_COMPLEX),
+        iree_vulkan = set_difference(TF_MATH_FUNCTIONS, VULKAN_FAILING_COMPLEX),
         tf = TF_MATH_FUNCTIONS,
     ).items()
 ]
