@@ -197,7 +197,7 @@ bool OpDispatchPolicy::isFusableWithConsumersOnly(Operation *op) {
 // TODO(b/144530470): replace with tablegen attributes/interfaces.
 bool OpDispatchPolicy::isUnsupportedFusionOp(Operation *op) {
   return isa<mhlo::ConcatenateOp, mhlo::ConvOp, mhlo::DotGeneralOp, mhlo::PadOp,
-             mhlo::ReduceOp, mhlo::ReduceWindowOp, mhlo::TorchIndexSelectOp>(
+             mhlo::ReduceOp, mhlo::ReduceWindowOp>(
              op) ||
          (!clEnableMatmulFusion && isa<mhlo::DotOp>(op)) || isRootOnlyOp(op);
 }
