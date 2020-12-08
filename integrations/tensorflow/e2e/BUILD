@@ -43,7 +43,7 @@ package(
         main = src,
         python_version = "PY3",
         deps = INTREE_TENSORFLOW_PY_DEPS + NUMPY_DEPS + [
-            "//integrations/tensorflow/bindings/python/pyiree/tf/support",
+            "//third_party/py/pyiree:pylib_tf_support",
         ],
     )
     for src in glob(["*_test.py"])
@@ -170,7 +170,7 @@ iree_e2e_test_suite(
     },
     reference_backend = "tf",
     deps = INTREE_TENSORFLOW_PY_DEPS + NUMPY_DEPS + [
-        "//integrations/tensorflow/bindings/python/pyiree/tf/support",
+        "//third_party/py/pyiree:pylib_tf_support",
     ],
 )
 
@@ -190,7 +190,7 @@ iree_e2e_test_suite(
         "notap",
     ],
     deps = INTREE_TENSORFLOW_PY_DEPS + NUMPY_DEPS + [
-        "//integrations/tensorflow/bindings/python/pyiree/tf/support",
+        "//third_party/py/pyiree:pylib_tf_support",
     ],
 )
 
@@ -214,6 +214,6 @@ iree_e2e_test_suite(
         "notap",
     ],
     deps = INTREE_TENSORFLOW_PY_DEPS + NUMPY_DEPS + [
-        "//integrations/tensorflow/bindings/python/pyiree/tf/support",
+        "//third_party/py/pyiree:pylib_tf_support",
     ],
 )
