@@ -890,6 +890,7 @@ iree_status_t iree_vm_bytecode_dispatch(
       }
       uint32_t index = VM_DecOperandRegI32("index");
       bool result_is_move;
+      const iree_vm_type_def_t* type_def = VM_DecTypeOf("result");
       iree_vm_ref_t* result = VM_DecResultRegRef("result", &result_is_move);
       IREE_RETURN_IF_ERROR(iree_vm_list_get_ref_retain(list, index, result));
     });
