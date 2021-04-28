@@ -4,6 +4,24 @@ vm.module @list_variant_ops {
   // vm.list.* with list types (nesting)
   //===--------------------------------------------------------------------===//
 
+  vm.export @fail_ref_return_bug
+  vm.func @fail_ref_return_bug() {
+    %c0 = vm.const.i32 0 : i32
+    %c1 = vm.const.i32 1 : i32
+
+    %inner = vm.list.alloc %c1 : (i32) -> !vm.list<i32>
+
+    %outer = vm.list.alloc %c1 : (i32) -> !vm.list<!vm.list<i32>>
+    vm.list.resize %outer, %c1 : (!vm.list<!vm.list<i32>>, i32)
+    vm.list.set.ref %outer, %c0, %inner : (!vm.list<!vm.list<i32>>, i32, !vm.list<i32>)
+    %inner_ret = vm.list.get.ref %outer, %c0 : (!vm.list<!vm.list<i32>>, i32) -> !vm.list<i32>
+    %sz = vm.list.size %inner_ret : (!vm.list<i32>) -> i32
+    %sz_dno = iree.do_not_optimize(%sz) : i32
+    
+    %statusCode = vm.const.i32 2 : i32
+    vm.fail %statusCode, "We should reach this point."
+  }
+
   vm.export @test_listception
   vm.func @test_listception() {
     %c0 = vm.const.i32 0 : i32

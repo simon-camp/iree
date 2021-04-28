@@ -891,7 +891,7 @@ iree_status_t iree_vm_bytecode_dispatch(
       uint32_t index = VM_DecOperandRegI32("index");
       bool result_is_move;
       iree_vm_ref_t* result = VM_DecResultRegRef("result", &result_is_move);
-      return iree_vm_list_get_ref_retain(list, index, result);
+      IREE_RETURN_IF_ERROR(iree_vm_list_get_ref_retain(list, index, result));
     });
 
     DISPATCH_OP(CORE, ListSetRef, {
@@ -905,9 +905,9 @@ iree_status_t iree_vm_bytecode_dispatch(
       bool operand_is_move;
       iree_vm_ref_t* operand = VM_DecOperandRegRef("value", &operand_is_move);
       if (operand_is_move) {
-        return iree_vm_list_set_ref_move(list, index, operand);
+        IREE_RETURN_IF_ERROR(iree_vm_list_set_ref_move(list, index, operand));
       } else {
-        return iree_vm_list_set_ref_retain(list, index, operand);
+        IREE_RETURN_IF_ERROR(iree_vm_list_set_ref_retain(list, index, operand));
       }
     });
 
