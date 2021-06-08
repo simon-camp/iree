@@ -43,6 +43,7 @@ c_embed_data(
         ":global_ops.vmfb",
         ":global_ops_f32.vmfb",
         ":global_ops_i64.vmfb",
+        ":global_ops_ref.vmfb",
         ":list_ops.vmfb",
         ":list_variant_ops.vmfb",
         ":ref_ops.vmfb",
@@ -153,6 +154,12 @@ iree_bytecode_module(
 iree_bytecode_module(
     name = "global_ops_i64",
     src = "global_ops_i64.mlir",
+    flags = ["-iree-vm-ir-to-bytecode-module"],
+)
+
+iree_bytecode_module(
+    name = "global_ops_ref",
+    src = "global_ops_ref.mlir",
     flags = ["-iree-vm-ir-to-bytecode-module"],
 )
 
