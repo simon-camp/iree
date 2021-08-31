@@ -133,116 +133,6 @@ LogicalResult clearStruct(OpBuilder builder, Value structValue,
   return success();
 }
 
-LogicalResult convertFuncOp(IREE::VM::FuncOp funcOp,
-                            VMAnalysisCache &vmAnalysisCache) {
-  auto ctx = funcOp.getContext();
-  auto loc = funcOp.getLoc();
-
-  OpBuilder builder(funcOp);
-
-  auto moduleOp = funcOp.getOperation()->getParentOfType<IREE::VM::ModuleOp>();
-
-  FunctionType funcType = funcOp.getType();
-  std::string name =
-      std::string(moduleOp.getName()) + "_" + std::string(funcOp.getName());
-  std::string moduleTypeName = (moduleOp.getName() + "_t*").str();
-  std::string moduleStateTypeName = (moduleOp.getName() + "_state_t*").str();
-
-  Type stackType = emitc::OpaqueType::get(ctx, "iree_vm_stack_t*");
-  Type moduleType = emitc::OpaqueType::get(ctx, moduleTypeName);
-  Type moduleStateType = emitc::OpaqueType::get(ctx, moduleStateTypeName);
-
-  SmallVector<Type, 3> inputTypes = {stackType, moduleType, moduleStateType};
-  SmallVector<Type, 1> outputTypes;
-
-  for (auto &inputType : funcType.getInputs()) {
-    inputTypes.push_back(inputType);
-  }
-
-  for (auto &resultType : funcType.getResults()) {
-    Optional<std::string> cType = getCType(resultType);
-    if (!cType.hasValue()) {
-      return funcOp.emitError() << "unable to emit C type";
-    }
-    std::string cPtrType;
-    // We pass refs as iree_vm_ref_t* regardless of whether it is an in or out
-    // parameter
-    if (resultType.isa<IREE::VM::RefType>()) {
-      cPtrType = cType.getValue();
-    } else {
-      cPtrType = cType.getValue() + std::string("*");
-    }
-    Type type = emitc::OpaqueType::get(ctx, cPtrType);
-    inputTypes.push_back(type);
-    outputTypes.push_back(type);
-  }
-
-  auto newFuncType = mlir::FunctionType::get(
-      ctx, {inputTypes}, {emitc::OpaqueType::get(ctx, "iree_status_t")});
-
-  auto newFuncOp = builder.create<mlir::FuncOp>(loc, name, newFuncType);
-  newFuncOp.getOperation()->setAttr("emitc.static", UnitAttr::get(ctx));
-
-  Optional<std::string> callingConvention = makeCallingConventionString(funcOp);
-
-  // Annotate new function with calling convention string which gets used in
-  // the CModuleTarget.
-  newFuncOp.getOperation()->setAttr(
-      "vm.calling_convention",
-      StringAttr::get(ctx, callingConvention.getValue()));
-
-  // This call shold be equivalent to rewriter.inlineRegionBefore()
-  newFuncOp.getBody().getBlocks().splice(newFuncOp.end(),
-                                         funcOp.getBody().getBlocks());
-
-  Block &entryBlock = newFuncOp.getBlocks().front();
-
-  entryBlock.insertArgument(static_cast<unsigned>(0), stackType);
-  entryBlock.insertArgument(static_cast<unsigned>(1), moduleType);
-  entryBlock.insertArgument(static_cast<unsigned>(2), moduleStateType);
-
-  entryBlock.addArguments(outputTypes);
-
-  auto ptr = vmAnalysisCache.find(funcOp.getOperation());
-  if (ptr == vmAnalysisCache.end()) {
-    return funcOp.emitError() << "parent func op not found in cache.";
-  }
-
-  // Add constant ops for local refs
-  const int numRefArgs = llvm::count_if(inputTypes, [](Type inputType) {
-    return inputType.isa<IREE::VM::RefType>();
-  });
-  const int numRefs = ptr->second.getNumRefRegisters() - numRefArgs;
-
-  builder.setInsertionPointToStart(&entryBlock);
-
-  for (int i = 0; i < numRefs; i++) {
-    auto refOp = builder.create<emitc::ConstantOp>(
-        /*location=*/loc,
-        /*resultType=*/emitc::OpaqueType::get(ctx, "iree_vm_ref_t"),
-        /*value=*/emitc::OpaqueAttr::get(ctx, ""));
-
-    // Mark local refs so that we can release them before a return operation.
-    // Here we rely on the fact that the register allocation maps arguments in
-    // the first slots.
-    refOp.getOperation()->setAttr("ref_ordinal",
-                                  builder.getIndexAttr(i + numRefArgs));
-
-    if (failed(clearStruct(builder, refOp.getResult(), /*isPointer=*/false))) {
-      return failure();
-    }
-  }
-
-  vmAnalysisCache.insert(
-      std::make_pair(newFuncOp.getOperation(), std::move(ptr->second)));
-
-  if (failed(
-          funcOp.replaceAllSymbolUses(builder.getStringAttr(name), moduleOp)))
-    return funcOp.emitError() << "unable to update symbol name in module";
-
-  return success();
-}
-
 Optional<std::string> buildFunctionName(IREE::VM::ModuleOp &moduleOp,
                                         IREE::VM::ImportOp &importOp) {
   auto callingConvention = makeImportCallingConventionString(importOp);
@@ -389,13 +279,66 @@ Optional<Value> findRef(OpBuilder builder, Location location,
 
   assert(refResult.getType().isa<IREE::VM::RefType>());
 
+  int32_t ordinal;
+  if (Operation *op = refResult.getDefiningOp()) {
+    auto operandOrResultNumber =
+        [](Value value,
+           Operation *op) -> Optional<std::pair<unsigned, std::string>> {
+      for (OpOperand &operand : op->getOpOperands()) {
+        if (operand.get() == value) {
+          return std::make_pair(operand.getOperandNumber(),
+                                std::string("operand_ordinal"));
+        }
+      }
+      for (OpResult result : op->getResults()) {
+        if (result == value) {
+          return std::make_pair(result.getResultNumber(),
+                                std::string("result_ordinal"));
+        }
+      }
+      return None;
+    };
+
+    auto result = operandOrResultNumber(refResult, op);
+    unsigned index = std::get<0>(result.getValue());
+    std::string attrName = std::get<1>(result.getValue());
+    if (!op->hasAttr(attrName)) {
+      parentFuncOp.emitError() << "missing annotation for ordinal";
+      refResult.dump();
+      op->dump();
+
+      return None;
+    }
+    ordinal = op->getAttr(attrName)
+                  .cast<ArrayAttr>()[index]
+                  .cast<IntegerAttr>()
+                  .getInt();
+  } else {
+    op = parentFuncOp.getOperation();
+    unsigned index;
+    for (BlockArgument blockArg : parentFuncOp.getArguments()) {
+      if (blockArg == refResult) {
+        index = blockArg.getArgNumber();
+      }
+    }
+    if (!op->hasAttr("argument_ordinal")) {
+      parentFuncOp.emitError() << "missing annotation for ordinal";
+      refResult.dump();
+      parentFuncOp->dump();
+
+      return None;
+    }
+    ordinal = op->getAttr("argument_ordinal")
+                  .cast<ArrayAttr>()[index]
+                  .cast<IntegerAttr>()
+                  .getInt();
+  }
+
   auto ptr = vmAnalysisCache.find(parentFuncOp.getOperation());
   if (ptr == vmAnalysisCache.end()) {
     parentFuncOp.emitError() << "parent func op not found in cache.";
     return None;
   }
-
-  int32_t ordinal = ptr->second.getRefRegisterOrdinal(refResult);
 
   // Search block arguments
   int refArgCounter = 0;
@@ -404,7 +347,6 @@ Optional<Value> findRef(OpBuilder builder, Location location,
 
     if (arg.getType() == emitc::OpaqueType::get(ctx, "iree_vm_ref_t*")) {
       if (ordinal == refArgCounter++) {
-        ptr->second.remapValue(refResult, arg);
         return arg;
       }
     }
@@ -424,8 +366,6 @@ Optional<Value> findRef(OpBuilder builder, Location location,
           /*type=*/emitc::OpaqueType::get(ctx, "iree_vm_ref_t*"),
           /*applicableOperator=*/StringAttr::get(ctx, "&"),
           /*operand=*/constantOp.getResult());
-
-      ptr->second.remapValue(refResult, ptrOp.getResult());
 
       return ptrOp.getResult();
     }
@@ -459,8 +399,204 @@ void releaseLocalRefs(OpBuilder &builder, Location location,
   }
 }
 
-/// Generate an emitc.call op with one result and split the current block into a
-/// continuation and failure block based on the truthiness of the result
+LogicalResult annotateFuncOp(mlir::FuncOp &funcOp, VMAnalysis &vmAnalysis,
+                             Optional<std::string> callingConvention) {
+  auto ctx = funcOp.getContext();
+  OpBuilder builder(funcOp);
+
+  funcOp.getOperation()->setAttr("emitc.static", UnitAttr::get(ctx));
+
+  // Annotate new function with calling convention string which gets used in
+  // the CModuleTarget.
+  funcOp.getOperation()->setAttr(
+      "vm.calling_convention",
+      StringAttr::get(ctx, callingConvention.getValue()));
+
+  auto isRef = [](Value value) {
+    return value.getType().isa<IREE::VM::RefType>();
+  };
+
+  auto getOrdinal = [&vmAnalysis](Value value) -> int64_t {
+    if (value.getType().isa<IREE::VM::RefType>()) {
+      return vmAnalysis.getRegisterOrdinal(value);
+    }
+    return 0;
+  };
+  auto isLastUse = [&vmAnalysis](Value value, Operation &op) -> bool {
+    if (value.getType().isa<IREE::VM::RefType>()) {
+      return vmAnalysis.isLastValueUse(value, &op);
+    }
+    return false;
+  };
+
+  SmallVector<int64_t> ordinals =
+      llvm::to_vector<1>(llvm::map_range(funcOp.getArguments(), getOrdinal));
+  funcOp.getOperation()->setAttr("argument_ordinal",
+                                 builder.getIndexArrayAttr(ordinals));
+
+  for (Block &block : funcOp.getBlocks()) {
+    // Annotate operations with vm analysis
+    for (Operation &op : block.getOperations()) {
+      if (llvm::any_of(op.getOperands(), isRef)) {
+        SmallVector<int64_t> ordinals =
+            llvm::to_vector<1>(llvm::map_range(op.getOperands(), getOrdinal));
+        SmallVector<bool> lastUse = llvm::to_vector<1>(llvm::map_range(
+            op.getOperands(),
+            [&op, &isLastUse](auto v) { return isLastUse(v, op); }));
+
+        op.setAttr("operand_ordinal", builder.getIndexArrayAttr(ordinals));
+        op.setAttr("operand_is_last_use", builder.getBoolArrayAttr(lastUse));
+      }
+      if (llvm::any_of(op.getResults(), isRef)) {
+        SmallVector<int64_t> ordinals =
+            llvm::to_vector<1>(llvm::map_range(op.getResults(), getOrdinal));
+        SmallVector<bool> lastUse = llvm::to_vector<1>(llvm::map_range(
+            op.getResults(),
+            [&op, &isLastUse](auto v) { return isLastUse(v, op); }));
+
+        op.setAttr("result_ordinal", builder.getIndexArrayAttr(ordinals));
+        op.setAttr("result_is_last_use", builder.getBoolArrayAttr(lastUse));
+      }
+    }
+  }
+
+  return success();
+}
+
+LogicalResult convertFuncOp(IREE::VM::FuncOp funcOp,
+                            VMAnalysisCache &vmAnalysisCache) {
+  auto ctx = funcOp.getContext();
+  auto loc = funcOp.getLoc();
+
+  OpBuilder builder(funcOp);
+
+  auto moduleOp = funcOp.getOperation()->getParentOfType<IREE::VM::ModuleOp>();
+
+  FunctionType funcType = funcOp.getType();
+  std::string name =
+      std::string(moduleOp.getName()) + "_" + std::string(funcOp.getName());
+  std::string moduleTypeName = (moduleOp.getName() + "_t*").str();
+  std::string moduleStateTypeName = (moduleOp.getName() + "_state_t*").str();
+
+  Type stackType = emitc::OpaqueType::get(ctx, "iree_vm_stack_t*");
+  Type moduleType = emitc::OpaqueType::get(ctx, moduleTypeName);
+  Type moduleStateType = emitc::OpaqueType::get(ctx, moduleStateTypeName);
+
+  SmallVector<Type, 3> inputTypes = {stackType, moduleType, moduleStateType};
+  SmallVector<Type, 1> outputTypes;
+
+  for (auto &inputType : funcType.getInputs()) {
+    inputTypes.push_back(inputType);
+  }
+
+  for (auto &resultType : funcType.getResults()) {
+    Optional<std::string> cType = getCType(resultType);
+    if (!cType.hasValue()) {
+      return funcOp.emitError() << "unable to emit C type";
+    }
+    std::string cPtrType;
+    // We pass refs as iree_vm_ref_t* regardless of whether it is an in or out
+    // parameter
+    if (resultType.isa<IREE::VM::RefType>()) {
+      cPtrType = cType.getValue();
+    } else {
+      cPtrType = cType.getValue() + std::string("*");
+    }
+    Type type = emitc::OpaqueType::get(ctx, cPtrType);
+    inputTypes.push_back(type);
+    outputTypes.push_back(type);
+  }
+
+  auto newFuncType = mlir::FunctionType::get(
+      ctx, {inputTypes}, {emitc::OpaqueType::get(ctx, "iree_status_t")});
+
+  auto newFuncOp = builder.create<mlir::FuncOp>(loc, name, newFuncType);
+
+  // This call shold be equivalent to rewriter.inlineRegionBefore()
+  newFuncOp.getBody().getBlocks().splice(newFuncOp.end(),
+                                         funcOp.getBody().getBlocks());
+
+  Block &entryBlock = newFuncOp.getBlocks().front();
+
+  entryBlock.insertArgument(static_cast<unsigned>(0), stackType);
+  entryBlock.insertArgument(static_cast<unsigned>(1), moduleType);
+  entryBlock.insertArgument(static_cast<unsigned>(2), moduleStateType);
+
+  entryBlock.addArguments(outputTypes);
+
+  auto ptr = vmAnalysisCache.find(funcOp.getOperation());
+  if (ptr == vmAnalysisCache.end()) {
+    return funcOp.emitError() << "parent func op not found in cache.";
+  }
+
+  if (failed(annotateFuncOp(newFuncOp, ptr->second,
+                            makeCallingConventionString(funcOp)))) {
+    return newFuncOp.emitError()
+           << "annotating function with analysis results failed";
+  }
+
+  vmAnalysisCache.insert(
+      std::make_pair(newFuncOp.getOperation(), std::move(ptr->second)));
+
+  // ptr was invalidated by the insert and the value was moved to the
+  // newFuncOp key.
+  ptr = vmAnalysisCache.find(newFuncOp.getOperation());
+  assert(ptr != vmAnalysisCache.end());
+
+  // Add constant ops for local refs
+  const int numRefArgs = llvm::count_if(inputTypes, [](Type inputType) {
+    return inputType.isa<IREE::VM::RefType>();
+  });
+  const int numLocalRefs = ptr->second.getNumRefRegisters() - numRefArgs;
+
+  builder.setInsertionPointToStart(&entryBlock);
+
+  for (int i = 0; i < numLocalRefs; i++) {
+    auto refOp = builder.create<emitc::ConstantOp>(
+        /*location=*/loc,
+        /*resultType=*/emitc::OpaqueType::get(ctx, "iree_vm_ref_t"),
+        /*value=*/emitc::OpaqueAttr::get(ctx, ""));
+
+    // Mark local refs so that we can release them before a return operation.
+    // Here we rely on the fact that the register allocation maps arguments in
+    // the first slots.
+    refOp.getOperation()->setAttr("ref_ordinal",
+                                  builder.getIndexAttr(i + numRefArgs));
+
+    if (failed(clearStruct(builder, refOp.getResult(), /*isPointer=*/false))) {
+      return failure();
+    }
+  }
+
+  // Remove refs from basic block arguments
+  for (Block &block : llvm::drop_begin(newFuncOp.getBlocks(), 1)) {
+    for (BlockArgument blockArg : block.getArguments()) {
+      if (!blockArg.getType().isa<IREE::VM::RefType>()) {
+        continue;
+      }
+      auto ordinal = ptr->second.getRegisterOrdinal(blockArg);
+      auto ref = findRef(builder, loc, newFuncOp, vmAnalysisCache, blockArg);
+      if (!ref.hasValue()) {
+        return newFuncOp.emitError()
+               << "searched for ref with ordinal #" << ordinal << ", have "
+               << numLocalRefs << " local refs with range [" << numRefArgs
+               << ", " << (numRefArgs + numLocalRefs) << ")";
+      }
+
+      blockArg.replaceAllUsesWith(ref.getValue());
+      block.eraseArgument(blockArg.getArgNumber());
+    }
+  }
+
+  if (failed(
+          funcOp.replaceAllSymbolUses(builder.getStringAttr(name), moduleOp)))
+    return funcOp.emitError() << "unable to update symbol name in module";
+
+  return success();
+}
+
+/// Generate an emitc.call op with one result and split the current block into
+/// a continuation and failure block based on the truthiness of the result
 /// value, i.e. a truthy value branches to the continuation block when
 /// `negateCondition` is false.
 emitc::CallOp failableCall(
@@ -853,9 +989,9 @@ LogicalResult createAPIFunctions(IREE::VM::ModuleOp moduleOp) {
     auto ordinal_counts = moduleOp.ordinal_counts();
 
     if (!ordinal_counts.hasValue()) {
-      return moduleOp.emitError()
-             << "ordinal_counts attribute not found. The OrdinalAllocationPass "
-                "must be run before.";
+      return moduleOp.emitError() << "ordinal_counts attribute not found. "
+                                     "The OrdinalAllocationPass "
+                                     "must be run before.";
     }
 
     const int numGlobalRefs = ordinal_counts.getValue().global_refs();
@@ -1070,9 +1206,9 @@ LogicalResult createAPIFunctions(IREE::VM::ModuleOp moduleOp) {
 
     funcOp.getOperation()->setAttr("emitc.static", UnitAttr::get(ctx));
 
-    // This function needs an iree_vm_native_module_descriptor_t that is emitted
-    // by the CModuleTarget at the moment. So we add a marker to this function
-    // and delay the printing of it.
+    // This function needs an iree_vm_native_module_descriptor_t that is
+    // emitted by the CModuleTarget at the moment. So we add a marker to this
+    // function and delay the printing of it.
     funcOp.getOperation()->setAttr("vm.emit_at_end", UnitAttr::get(ctx));
 
     Block *entryBlock = funcOp.addEntryBlock();
@@ -1494,7 +1630,10 @@ class CallOpConversion : public OpConversionPattern<IREE::VM::CallOp> {
       return op.emitError() << "parent func op not found in cache.";
     }
 
-    for (Value operand : operands) {
+    for (auto pair : llvm::enumerate(operands)) {
+      size_t index = pair.index();
+      Value operand = pair.value();
+
       assert(!operand.getType().isa<IREE::VM::RefType>());
 
       if (operand.getType() == emitc::OpaqueType::get(ctx, "iree_vm_ref_t*")) {
@@ -1514,7 +1653,11 @@ class CallOpConversion : public OpConversionPattern<IREE::VM::CallOp> {
           return failure();
         }
 
-        bool move = ptr->second.isLastValueUse(operand, op.getOperation());
+        bool move = op.getOperation()
+                        ->getAttr("operand_is_last_use")
+                        .cast<ArrayAttr>()[index]
+                        .cast<IntegerAttr>()
+                        .getInt();
 
         rewriter.create<emitc::CallOp>(
             /*location=*/loc,
@@ -1544,15 +1687,6 @@ class CallOpConversion : public OpConversionPattern<IREE::VM::CallOp> {
         if (!ref.hasValue()) {
           return op.emitError() << "local ref not found";
         }
-
-        // Keep track of the replaced value in the analysis to keep the value
-        // liveness working.
-        auto ptr = vmAnalysisCache.find(funcOp.getOperation());
-        if (ptr == vmAnalysisCache.end()) {
-          return op.emitError() << "parent func op not found in cache.";
-        }
-
-        ptr->second.remapValue(result, ref.getValue());
 
         resultOperands.push_back(ref.getValue());
         updatedOperands.push_back(ref.getValue());
@@ -1620,10 +1754,16 @@ class CompareRefOpConversion : public OpConversionPattern<CmpOpTy> {
       return cmpOp.emitError() << "parent func op not found in cache.";
     }
 
-    bool moveLhs =
-        ptr->second.isLastValueUse(cmpOp.lhs(), cmpOp.getOperation());
-    bool moveRhs =
-        ptr->second.isLastValueUse(cmpOp.rhs(), cmpOp.getOperation());
+    bool moveLhs = cmpOp.getOperation()
+                       ->getAttr("operand_is_last_use")
+                       .template cast<ArrayAttr>()[0]
+                       .template cast<IntegerAttr>()
+                       .getInt();
+    bool moveRhs = cmpOp.getOperation()
+                       ->getAttr("operand_is_last_use")
+                       .template cast<ArrayAttr>()[1]
+                       .template cast<IntegerAttr>()
+                       .getInt();
 
     rewriter.replaceOpWithNewOp<emitc::CallOp>(
         /*op=*/cmpOp,
@@ -1685,8 +1825,11 @@ class CompareRefNotZeroOpConversion
       return cmpOp.emitError() << "parent func op not found in cache.";
     }
 
-    bool move =
-        ptr->second.isLastValueUse(cmpOp.operand(), cmpOp.getOperation());
+    bool move = cmpOp.getOperation()
+                    ->getAttr("operand_is_last_use")
+                    .cast<ArrayAttr>()[0]
+                    .cast<IntegerAttr>()
+                    .getInt();
 
     rewriter.replaceOpWithNewOp<emitc::CallOp>(
         /*op=*/cmpOp,
@@ -1907,14 +2050,22 @@ class CondBranchOpConversion
     auto ctx = op.getContext();
     auto loc = op.getLoc();
 
-    if (llvm::any_of(operands, [&ctx](Value operand) {
-          Type type = operand.getType();
-          assert(!type.isa<IREE::VM::RefType>());
-          return type == emitc::OpaqueType::get(ctx, "iree_vm_ref_t*");
-        })) {
-      return op.emitError()
-             << "basic block arguments with ref type not supported";
-    }
+    auto isNotRefOperand = [&ctx](Value operand) {
+      Type type = operand.getType();
+      assert(!type.isa<IREE::VM::RefType>());
+      return type != emitc::OpaqueType::get(ctx, "iree_vm_ref_t*");
+    };
+
+    Block *trueDest = op.getTrueDest();
+    auto trueDestOperands = operands.slice(1, trueDest->getNumArguments());
+    auto falseDestOperands = operands.slice(1 + trueDest->getNumArguments());
+
+    SmallVector<Value> nonRefTrueDestOperands;
+    llvm::copy_if(trueDestOperands, nonRefTrueDestOperands.begin(),
+                  isNotRefOperand);
+    SmallVector<Value> nonRefFalseDestOperands;
+    llvm::copy_if(falseDestOperands, nonRefFalseDestOperands.begin(),
+                  isNotRefOperand);
 
     Type boolType = rewriter.getI1Type();
 
@@ -2170,7 +2321,6 @@ class GlobalLoadStoreRefOpConversion
         vmAnalysisCache(vmAnalysisCache) {}
 
  private:
-  // TODO(simon-camp): Deduplicate code
   LogicalResult matchAndRewrite(
       LoadStoreOpTy op, ArrayRef<Value> operands,
       ConversionPatternRewriter &rewriter) const override {
@@ -2206,8 +2356,11 @@ class GlobalLoadStoreRefOpConversion
     }
 
     Value localValue = isLoad ? op->getResult(0) : op->getOperand(0);
+    std::string attrName =
+        isLoad ? "result_is_last_use" : "operand_is_last_use";
 
-    bool move = ptr->second.isLastValueUse(localValue, op);
+    bool move =
+        op->getAttr(attrName).cast<ArrayAttr>()[0].cast<IntegerAttr>().getInt();
 
     auto localRef = findRef(rewriter, loc, funcOp, vmAnalysisCache, localValue);
 
@@ -2895,7 +3048,11 @@ class ListSetRefOpConversion
       return setOp.emitError() << "parent func op not found in cache.";
     }
 
-    bool move = ptr->second.isLastValueUse(setOp.value(), setOp.getOperation());
+    bool move = setOp.getOperation()
+                    ->getAttr("operand_is_last_use")
+                    .template cast<ArrayAttr>()[2]
+                    .cast<IntegerAttr>()
+                    .getInt();
 
     StringRef callee =
         move ? "iree_vm_list_set_ref_move" : "iree_vm_list_set_ref_retain";

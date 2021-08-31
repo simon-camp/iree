@@ -32,33 +32,17 @@ struct VMAnalysis {
     return registerAllocation.getMaxRefRegisterOrdinal() + 1;
   }
 
-  int getRefRegisterOrdinal(Value ref) {
-    auto originalRef = originalValue(ref);
-    assert(originalRef.getType().isa<IREE::VM::RefType>());
-    return registerAllocation.mapToRegister(originalRef).ordinal();
+  int getRegisterOrdinal(Value value) {
+    return registerAllocation.mapToRegister(value).ordinal();
   }
 
-  bool isLastValueUse(Value ref, Operation *op) {
-    auto originalRef = originalValue(ref);
-    assert(originalRef.getType().isa<IREE::VM::RefType>());
-    return valueLiveness.isLastValueUse(originalRef, op);
-  }
-
-  void remapValue(Value original, Value replacement) {
-    assert(original.getType().isa<IREE::VM::RefType>());
-    mapping[replacement] = original;
-    return;
+  bool isLastValueUse(Value value, Operation *op) {
+    return valueLiveness.isLastValueUse(value, op);
   }
 
  private:
   RegisterAllocation registerAllocation;
   ValueLiveness valueLiveness;
-  DenseMap<Value, Value> mapping;
-
-  Value originalValue(Value ref) {
-    auto ptr = mapping.find(ref);
-    return ptr == mapping.end() ? ref : ptr->second;
-  }
 };
 
 using VMAnalysisCache = DenseMap<Operation *, VMAnalysis>;
