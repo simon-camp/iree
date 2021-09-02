@@ -16,41 +16,9 @@
 namespace mlir {
 namespace iree_compiler {
 
-struct VMAnalysis {
- public:
-  VMAnalysis(RegisterAllocation &&registerAllocation,
-             ValueLiveness &&valueLiveness)
-      : registerAllocation(std::move(registerAllocation)),
-        valueLiveness(std::move(valueLiveness)) {}
-
-  VMAnalysis(VMAnalysis &&) = default;
-  VMAnalysis &operator=(VMAnalysis &&) = default;
-  VMAnalysis(const VMAnalysis &) = delete;
-  VMAnalysis &operator=(const VMAnalysis &) = delete;
-
-  int getNumRefRegisters() {
-    return registerAllocation.getMaxRefRegisterOrdinal() + 1;
-  }
-
-  int getRegisterOrdinal(Value value) {
-    return registerAllocation.mapToRegister(value).ordinal();
-  }
-
-  bool isLastValueUse(Value value, Operation *op) {
-    return valueLiveness.isLastValueUse(value, op);
-  }
-
- private:
-  RegisterAllocation registerAllocation;
-  ValueLiveness valueLiveness;
-};
-
-using VMAnalysisCache = DenseMap<Operation *, VMAnalysis>;
-
 void populateVMToEmitCPatterns(MLIRContext *context,
                                IREE::VM::EmitCTypeConverter &typeConverter,
-                               OwningRewritePatternList &patterns,
-                               VMAnalysisCache &vmAnalysisCache);
+                               OwningRewritePatternList &patterns);
 
 namespace IREE {
 namespace VM {
