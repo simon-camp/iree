@@ -174,6 +174,7 @@ Optional<emitc::ApplyOp> createVmTypeDefPtr(ConversionPatternRewriter &rewriter,
 
   if (failed(clearStruct(rewriter, elementTypeOp.getResult(),
                          /*isPointer=*/false))) {
+    emitError(loc) << "Clearing struct failed";
     return None;
   }
 
@@ -202,6 +203,7 @@ Optional<emitc::ApplyOp> createVmTypeDefPtr(ConversionPatternRewriter &rewriter,
         /*operands=*/ArrayRef<Value>{elementTypeOp.getResult()});
   } else {
     if (!elementType.isa<IREE::VM::RefType>()) {
+      emitError(loc) << "expected Ref, got " << elementType;
       return None;
     }
     Type objType = elementType.cast<IREE::VM::RefType>().getObjectType();
@@ -434,9 +436,12 @@ LogicalResult annotateFuncOp(IREE::VM::FuncOp &vmFuncOp, mlir::FuncOp &funcOp,
         SmallVector<bool> lastUse = llvm::to_vector<1>(llvm::map_range(
             op.getOperands(),
             [&op, &isLastUse](auto v) { return isLastUse(v, op); }));
+        SmallVector<Type> types = llvm::to_vector<1>(llvm::map_range(
+            op.getOperands(), [](auto v) { return v.getType(); }));
 
         op.setAttr("operand_ordinal", builder.getIndexArrayAttr(ordinals));
         op.setAttr("operand_is_last_use", builder.getBoolArrayAttr(lastUse));
+        op.setAttr("operand_type", builder.getTypeArrayAttr(types));
       }
       if (llvm::any_of(op.getResults(), isRef)) {
         SmallVector<int64_t> ordinals =
@@ -444,9 +449,12 @@ LogicalResult annotateFuncOp(IREE::VM::FuncOp &vmFuncOp, mlir::FuncOp &funcOp,
         SmallVector<bool> lastUse = llvm::to_vector<1>(llvm::map_range(
             op.getResults(),
             [&op, &isLastUse](auto v) { return isLastUse(v, op); }));
+        SmallVector<Type> types = llvm::to_vector<1>(llvm::map_range(
+            op.getResults(), [](auto v) { return v.getType(); }));
 
         op.setAttr("result_ordinal", builder.getIndexArrayAttr(ordinals));
         op.setAttr("result_is_last_use", builder.getBoolArrayAttr(lastUse));
+        op.setAttr("result_type", builder.getTypeArrayAttr(types));
       }
     }
   }
@@ -1428,32 +1436,65 @@ class FuncOpConversion : public OpConversionPattern<mlir::FuncOp> {
   LogicalResult matchAndRewrite(
       mlir::FuncOp funcOp, ArrayRef<Value> operands,
       ConversionPatternRewriter &rewriter) const override {
-    TypeConverter::SignatureConversion signatureConverter(
-        funcOp.getType().getNumInputs());
-    TypeConverter typeConverter;
-    for (const auto &arg : llvm::enumerate(funcOp.getArguments())) {
-      Type convertedType =
-          getTypeConverter()->convertType(arg.value().getType());
-      signatureConverter.addInputs(arg.index(), convertedType);
+    rewriter.startRootUpdate(funcOp);
+    Region &region = funcOp.getBody();
+
+    SmallVector<TypeConverter::SignatureConversion> blockConversions;
+    for (auto &block : llvm::drop_begin(funcOp.getBlocks(), 1)) {
+      TypeConverter::SignatureConversion blockConversion(
+          block.getNumArguments());
+
+      for (const auto &arg : llvm::enumerate(block.getArguments())) {
+        Type type = arg.value().getType();
+        Type convertedType = getTypeConverter()->convertType(type);
+
+        if (type.isa<IREE::VM::RefType>()) {
+          rewriter.cancelRootUpdate(funcOp);
+          return funcOp.emitError()
+                 << "Block argument conversion for ref type not supported!";
+        } else {
+          blockConversion.addInputs(arg.index(), convertedType);
+        }
+      }
+      blockConversions.push_back(blockConversion);
+    }
+    assert(blockConversions.size() == region.getBlocks().size() - 1);
+
+    if (failed(rewriter.convertNonEntryRegionTypes(&region, *getTypeConverter(),
+                                                   blockConversions))) {
+      rewriter.cancelRootUpdate(funcOp);
+      return funcOp.emitError() << "non-entry region type conversion failed";
     }
 
-    rewriter.applySignatureConversion(&funcOp.getBody(), signatureConverter);
+    Block &entryBlock = funcOp.getBlocks().front();
+
+    TypeConverter::SignatureConversion signatureConversion(
+        funcOp.getType().getNumInputs());
+
+    if (failed(getTypeConverter()->convertSignatureArgs(
+            funcOp.getType().getInputs(), signatureConversion, 0))) {
+      rewriter.cancelRootUpdate(funcOp);
+      return funcOp.emitError() << "signature conversion failed";
+    }
+
+    Block *newEntryBlock =
+        rewriter.applySignatureConversion(&region, signatureConversion);
 
     // Creates a new function with the updated signature.
-    rewriter.updateRootInPlace(funcOp, [&] {
-      funcOp.setType(
-          rewriter.getFunctionType(signatureConverter.getConvertedTypes(),
-                                   funcOp.getType().getResults()));
-    });
+    funcOp.setType(
+        rewriter.getFunctionType(signatureConversion.getConvertedTypes(),
+                                 funcOp.getType().getResults()));
+    rewriter.finalizeRootUpdate(funcOp);
     return success();
   }
 };
 
-class CallOpConversion : public OpConversionPattern<IREE::VM::CallOp> {
-  using OpConversionPattern<IREE::VM::CallOp>::OpConversionPattern;
+template <typename CallOpTy>
+class CallOpConversion : public OpConversionPattern<CallOpTy> {
+  using OpConversionPattern<CallOpTy>::OpConversionPattern;
 
   LogicalResult matchAndRewrite(
-      IREE::VM::CallOp op, ArrayRef<Value> operands,
+      CallOpTy op, ArrayRef<Value> operands,
       ConversionPatternRewriter &rewriter) const override {
     mlir::FuncOp funcOp =
         lookupSymbolRef<mlir::FuncOp>(op.getOperation(), "callee");
@@ -1468,20 +1509,21 @@ class CallOpConversion : public OpConversionPattern<IREE::VM::CallOp> {
 
     const bool isImported = importOp != nullptr;
 
-    return isImported ? rewriteImportedCall(op, operands, rewriter, importOp)
-                      : rewriteInternalCall(op, operands, rewriter, funcOp);
+    return isImported ? rewriteImportedCall(op.getOperation(), operands,
+                                            rewriter, importOp)
+                      : rewriteInternalCall(op.getOperation(), operands,
+                                            rewriter, funcOp);
   }
 
-  LogicalResult rewriteInternalCall(IREE::VM::CallOp op,
-                                    ArrayRef<Value> operands,
+  LogicalResult rewriteInternalCall(Operation *op, ArrayRef<Value> operands,
                                     ConversionPatternRewriter &rewriter,
                                     mlir::FuncOp funcOp) const {
-    auto loc = op.getLoc();
+    auto loc = op->getLoc();
 
     SmallVector<Value, 4> updatedOperands;
     SmallVector<Value, 4> resultOperands;
 
-    auto parentFuncOp = op.getOperation()->getParentOfType<mlir::FuncOp>();
+    auto parentFuncOp = op->getParentOfType<mlir::FuncOp>();
 
     BlockArgument stackArg = parentFuncOp.getArgument(0);
     BlockArgument moduleArg = parentFuncOp.getArgument(1);
@@ -1491,7 +1533,7 @@ class CallOpConversion : public OpConversionPattern<IREE::VM::CallOp> {
 
     if (failed(updateOperands(op, operands, rewriter, updatedOperands,
                               resultOperands))) {
-      return op.emitError() << "updateOperands failed";
+      return op->emitError() << "updateOperands failed";
     };
 
     returnIfError(
@@ -1501,7 +1543,7 @@ class CallOpConversion : public OpConversionPattern<IREE::VM::CallOp> {
         /*operands=*/updatedOperands);
 
     if (failed(updateResults(op, resultOperands))) {
-      return op.emitError() << "update results failed";
+      return op->emitError() << "update results failed";
     }
 
     rewriter.eraseOp(op);
@@ -1509,12 +1551,11 @@ class CallOpConversion : public OpConversionPattern<IREE::VM::CallOp> {
     return success();
   }
 
-  LogicalResult rewriteImportedCall(IREE::VM::CallOp op,
-                                    ArrayRef<Value> operands,
+  LogicalResult rewriteImportedCall(Operation *op, ArrayRef<Value> operands,
                                     ConversionPatternRewriter &rewriter,
                                     IREE::VM::ImportOp importOp) const {
-    auto ctx = op.getContext();
-    auto loc = op.getLoc();
+    auto ctx = op->getContext();
+    auto loc = op->getLoc();
 
     SmallVector<Value, 4> updatedOperands;
     SmallVector<Value, 4> resultOperands;
@@ -1525,11 +1566,11 @@ class CallOpConversion : public OpConversionPattern<IREE::VM::CallOp> {
     Optional<std::string> funcName = buildFunctionName(moduleOp, importOp);
 
     if (!funcName.hasValue())
-      return op.emitError() << "Couldn't build name to imported function";
+      return op->emitError() << "Couldn't build name to imported function";
 
     int importOrdinal = importOp.ordinal().getValue().getZExtValue();
 
-    auto funcOp = op.getOperation()->getParentOfType<mlir::FuncOp>();
+    auto funcOp = op->getParentOfType<mlir::FuncOp>();
     BlockArgument stackArg = funcOp.getArgument(0);
     BlockArgument stateArg = funcOp.getArgument(2);
 
@@ -1555,9 +1596,44 @@ class CallOpConversion : public OpConversionPattern<IREE::VM::CallOp> {
 
     updatedOperands = {stackArg, import.getResult(0)};
 
+    auto isVariadic = [](APInt segmentSize) {
+      return segmentSize.getSExtValue() != -1;
+    };
+
+    if (auto variadicOp = dyn_cast<IREE::VM::CallVariadicOp>(op)) {
+      DenseIntElementsAttr segmentSizes = variadicOp.segment_sizes();
+      size_t numSegments = segmentSizes.size();
+      size_t numVariadicSegments =
+          llvm::count_if(segmentSizes.getIntValues(), isVariadic);
+
+      if (numVariadicSegments != 1) {
+        op->emitError() << "only exactly one variadic segment supported";
+      }
+
+      auto lastSegmentSize =
+          segmentSizes.getValue(numSegments - 1).cast<IntegerAttr>().getValue();
+
+      if (!isVariadic(lastSegmentSize)) {
+        op->emitError() << "expected the last segment to be variadic";
+      }
+
+      size_t numOperands = variadicOp.getNumOperands();
+      size_t numStaticOperands = numSegments - numVariadicSegments;
+      size_t numVariadicOperands = numOperands - numStaticOperands;
+
+      // TODO(simon-camp): Use the args attribute of the call op to specify
+      // the constant,
+      auto numVariadic = rewriter.create<emitc::ConstantOp>(
+          /*location=*/loc,
+          /*resultType=*/rewriter.getIndexType(),
+          /*value=*/rewriter.getIndexAttr(numVariadicOperands));
+
+      updatedOperands.push_back(numVariadic.getResult());
+    }
+
     if (failed(updateOperands(op, operands, rewriter, updatedOperands,
                               resultOperands))) {
-      return op.emitError() << "updateOperands failed";
+      return op->emitError() << "updateOperands failed";
     }
 
     returnIfError(
@@ -1569,7 +1645,7 @@ class CallOpConversion : public OpConversionPattern<IREE::VM::CallOp> {
         /*operands=*/updatedOperands);
 
     if (failed(updateResults(op, resultOperands))) {
-      return op.emitError() << "update results failed";
+      return op->emitError() << "update results failed";
     }
 
     rewriter.eraseOp(op);
@@ -1577,14 +1653,14 @@ class CallOpConversion : public OpConversionPattern<IREE::VM::CallOp> {
     return success();
   }
 
-  LogicalResult updateOperands(IREE::VM::CallOp op, ArrayRef<Value> operands,
+  LogicalResult updateOperands(Operation *op, ArrayRef<Value> operands,
                                ConversionPatternRewriter &rewriter,
                                SmallVector<Value, 4> &updatedOperands,
                                SmallVector<Value, 4> &resultOperands) const {
-    auto ctx = op.getContext();
-    auto loc = op.getLoc();
+    auto ctx = op->getContext();
+    auto loc = op->getLoc();
 
-    auto funcOp = op.getOperation()->getParentOfType<mlir::FuncOp>();
+    auto funcOp = op->getParentOfType<mlir::FuncOp>();
 
     for (auto pair : llvm::enumerate(operands)) {
       size_t index = pair.index();
@@ -1606,11 +1682,10 @@ class CallOpConversion : public OpConversionPattern<IREE::VM::CallOp> {
 
         if (failed(clearStruct(rewriter, refPtrOp.getResult(),
                                /*isPointer=*/true))) {
-          return op.emitError() << "clearStruct call failed";
+          return op->emitError() << "clearStruct call failed";
         }
 
-        bool move = op.getOperation()
-                        ->getAttr("operand_is_last_use")
+        bool move = op->getAttr("operand_is_last_use")
                         .cast<ArrayAttr>()[index]
                         .cast<IntegerAttr>()
                         .getInt();
@@ -1618,7 +1693,7 @@ class CallOpConversion : public OpConversionPattern<IREE::VM::CallOp> {
         rewriter.create<emitc::CallOp>(
             /*location=*/loc,
             /*type=*/TypeRange{},
-            /*callee=*/StringAttr::get(ctx, "iree_vm_ref_assign"),
+            /*callee=*/StringAttr::get(ctx, "iree_vm_ref_retain_or_move"),
             /*args=*/
             ArrayAttr::get(
                 ctx, {rewriter.getBoolAttr(move), rewriter.getIndexAttr(0),
@@ -1634,14 +1709,14 @@ class CallOpConversion : public OpConversionPattern<IREE::VM::CallOp> {
 
     // Create a variable for every result and a pointer to it as output
     // parameter to the call.
-    for (OpResult result : op.getResults()) {
+    for (OpResult result : op->getResults()) {
       emitc::ConstantOp resultOp;
 
       if (result.getType().isa<IREE::VM::RefType>()) {
         auto ref = findRef(rewriter, loc, funcOp, result);
 
         if (!ref.hasValue()) {
-          return op.emitError() << "local ref not found";
+          return op->emitError() << "local ref not found";
         }
 
         resultOperands.push_back(ref.getValue());
@@ -1654,7 +1729,7 @@ class CallOpConversion : public OpConversionPattern<IREE::VM::CallOp> {
 
         Optional<std::string> cType = getCType(resultOp.getType());
         if (!cType.hasValue()) {
-          return op.emitError() << "unable to emit C type";
+          return op->emitError() << "unable to emit C type";
         }
 
         std::string cPtrType = cType.getValue() + std::string("*");
@@ -1671,9 +1746,9 @@ class CallOpConversion : public OpConversionPattern<IREE::VM::CallOp> {
     return success();
   }
 
-  LogicalResult updateResults(IREE::VM::CallOp op,
+  LogicalResult updateResults(Operation *op,
                               SmallVector<Value, 4> &resultOperands) const {
-    for (auto &pair : llvm::enumerate(op.getResults())) {
+    for (auto &pair : llvm::enumerate(op->getResults())) {
       size_t index = pair.index();
       OpResult result = pair.value();
       result.replaceAllUsesWith(resultOperands[index]);
@@ -2268,11 +2343,26 @@ class GlobalLoadStoreRefOpConversion
     bool move =
         op->getAttr(attrName).cast<ArrayAttr>()[0].cast<IntegerAttr>().getInt();
 
-    auto localRef = findRef(rewriter, loc, funcOp, localValue);
+    Value localRef;
+    Type elementType;
 
-    if (!localRef.hasValue()) {
-      return op->emitError() << "local ref not found";
+    if (localValue.getType().isa<IREE::VM::RefType>()) {
+      auto ref = findRef(rewriter, loc, funcOp, localValue);
+
+      if (!ref.hasValue()) {
+        return op->emitError() << "local ref not found";
+      }
+      localRef = ref.getValue();
+      elementType = localValue.getType();
+    } else {
+      localRef = localValue;
+      elementType = op->getAttr("operand_type")
+                        .cast<ArrayAttr>()[0]
+                        .cast<TypeAttr>()
+                        .getValue();
     }
+
+    assert(localRef.getType() == emitc::OpaqueType::get(ctx, "iree_vm_ref_t*"));
 
     BlockArgument stateArg = funcOp.getArgument(2);
     auto refs = rewriter.create<emitc::CallOp>(
@@ -2295,8 +2385,6 @@ class GlobalLoadStoreRefOpConversion
         /*templateArgs=*/ArrayAttr{},
         /*operands=*/ArrayRef<Value>{refs.getResult(0)});
 
-    Type elementType = localValue.getType();
-
     auto elementTypePtrOp = createVmTypeDefPtr(rewriter, op, elementType);
 
     if (!elementTypePtrOp.hasValue()) {
@@ -2315,8 +2403,8 @@ class GlobalLoadStoreRefOpConversion
         /*operands=*/
         ArrayRef<Value>{elementTypePtrOp.getValue().getResult()});
 
-    Value srcRef = isLoad ? stateRef.getResult(0) : localRef.getValue();
-    Value destRef = isLoad ? localRef.getValue() : stateRef.getResult(0);
+    Value srcRef = isLoad ? stateRef.getResult(0) : localRef;
+    Value destRef = isLoad ? localRef : stateRef.getResult(0);
 
     returnIfError(
         /*rewriter=*/rewriter,
@@ -2331,7 +2419,7 @@ class GlobalLoadStoreRefOpConversion
         ArrayRef<Value>{srcRef, typedefRefType.getResult(0), destRef});
 
     if (isLoad) {
-      rewriter.replaceOp(op, localRef.getValue());
+      rewriter.replaceOp(op, localRef);
     } else {
       rewriter.eraseOp(op);
     }
@@ -2955,7 +3043,9 @@ void populateVMToEmitCPatterns(MLIRContext *context,
 
   // CFG
   patterns.insert<BranchOpConversion>(context);
-  patterns.insert<CallOpConversion>(typeConverter, context);
+  patterns.insert<CallOpConversion<IREE::VM::CallOp>>(typeConverter, context);
+  patterns.insert<CallOpConversion<IREE::VM::CallVariadicOp>>(typeConverter,
+                                                              context);
   patterns.insert<CondBranchOpConversion>(context);
   patterns.insert<FailOpConversion>(context);
   patterns.insert<FuncOpConversion>(typeConverter, context);
