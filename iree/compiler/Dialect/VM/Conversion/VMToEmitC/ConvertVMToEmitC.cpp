@@ -272,6 +272,44 @@ Optional<emitc::ApplyOp> createVmTypeDefPtr(ConversionPatternRewriter &rewriter,
   return elementTypePtrOp;
 }
 
+Optional<Value> findRefByOrdinal(OpBuilder builder, Location location,
+                                 mlir::FuncOp &parentFuncOp, size_t ordinal) {
+  auto ctx = builder.getContext();
+
+  // Search block arguments
+  int refArgCounter = 0;
+  for (BlockArgument arg : parentFuncOp.getArguments()) {
+    assert(!arg.getType().isa<IREE::VM::RefType>());
+
+    if (arg.getType() == emitc::OpaqueType::get(ctx, "iree_vm_ref_t*")) {
+      if (ordinal == refArgCounter++) {
+        return arg;
+      }
+    }
+  }
+
+  // Search local refs
+  for (auto constantOp : parentFuncOp.getOps<emitc::ConstantOp>()) {
+    Operation *op = constantOp.getOperation();
+    if (!op->hasAttr("ref_ordinal")) continue;
+    if (op->getAttr("ref_ordinal")
+            .cast<IntegerAttr>()
+            .getValue()
+            .getZExtValue() == ordinal) {
+      // Get address of constant
+      auto ptrOp = builder.create<emitc::ApplyOp>(
+          /*location=*/location,
+          /*type=*/emitc::OpaqueType::get(ctx, "iree_vm_ref_t*"),
+          /*applicableOperator=*/StringAttr::get(ctx, "&"),
+          /*operand=*/constantOp.getResult());
+
+      return ptrOp.getResult();
+    }
+  }
+
+  return None;
+}
+
 /// Find a local ref of type `iree_vm_ref_t*` matching the ordinal of the given
 /// `IREE::VM::Ref` value.
 Optional<Value> findRef(OpBuilder builder, Location location,
@@ -280,7 +318,7 @@ Optional<Value> findRef(OpBuilder builder, Location location,
 
   assert(refResult.getType().isa<IREE::VM::RefType>());
 
-  int32_t ordinal;
+  size_t ordinal;
   if (Operation *op = refResult.getDefiningOp()) {
     auto operandOrResultNumber =
         [](Value value,
@@ -331,38 +369,7 @@ Optional<Value> findRef(OpBuilder builder, Location location,
                   .getInt();
   }
 
-  // Search block arguments
-  int refArgCounter = 0;
-  for (BlockArgument arg : parentFuncOp.getArguments()) {
-    assert(!arg.getType().isa<IREE::VM::RefType>());
-
-    if (arg.getType() == emitc::OpaqueType::get(ctx, "iree_vm_ref_t*")) {
-      if (ordinal == refArgCounter++) {
-        return arg;
-      }
-    }
-  }
-
-  // Search local refs
-  for (auto constantOp : parentFuncOp.getOps<emitc::ConstantOp>()) {
-    Operation *op = constantOp.getOperation();
-    if (!op->hasAttr("ref_ordinal")) continue;
-    if (op->getAttr("ref_ordinal")
-            .cast<IntegerAttr>()
-            .getValue()
-            .getZExtValue() == ordinal) {
-      // Get address of constant
-      auto ptrOp = builder.create<emitc::ApplyOp>(
-          /*location=*/location,
-          /*type=*/emitc::OpaqueType::get(ctx, "iree_vm_ref_t*"),
-          /*applicableOperator=*/StringAttr::get(ctx, "&"),
-          /*operand=*/constantOp.getResult());
-
-      return ptrOp.getResult();
-    }
-  }
-
-  return None;
+  return findRefByOrdinal(builder, location, parentFuncOp, ordinal);
 }
 
 void releaseLocalRefs(OpBuilder &builder, Location location,
@@ -455,6 +462,29 @@ LogicalResult annotateFuncOp(IREE::VM::FuncOp &vmFuncOp, mlir::FuncOp &funcOp,
         op.setAttr("result_ordinal", builder.getIndexArrayAttr(ordinals));
         op.setAttr("result_is_last_use", builder.getBoolArrayAttr(lastUse));
         op.setAttr("result_type", builder.getTypeArrayAttr(types));
+      }
+
+      if (auto branchOp = dyn_cast<IREE::VM::BranchOp>(op)) {
+        Block *dest = branchOp.getDest();
+        SmallVector<int64_t> ordinals = llvm::to_vector<1>(
+            llvm::map_range(dest->getArguments(), getOrdinal));
+
+        op.setAttr("dest_ordinal", builder.getIndexArrayAttr(ordinals));
+      }
+      if (auto condBranchOp = dyn_cast<IREE::VM::CondBranchOp>(op)) {
+        Block *trueDest = condBranchOp.getTrueDest();
+        SmallVector<int64_t> trueDestOrdinals = llvm::to_vector<1>(
+            llvm::map_range(trueDest->getArguments(), getOrdinal));
+
+        op.setAttr("true_dest_ordinal",
+                   builder.getIndexArrayAttr(trueDestOrdinals));
+
+        Block *falseDest = condBranchOp.getFalseDest();
+        SmallVector<int64_t> falseDestOrdinals = llvm::to_vector<1>(
+            llvm::map_range(falseDest->getArguments(), getOrdinal));
+
+        op.setAttr("false_dest_ordinal",
+                   builder.getIndexArrayAttr(falseDestOrdinals));
       }
     }
   }
@@ -2006,22 +2036,73 @@ class BranchOpConversion : public OpConversionPattern<IREE::VM::BranchOp> {
       ConversionPatternRewriter &rewriter) const override {
     auto ctx = op.getContext();
 
-    if (llvm::any_of(operands, [&ctx](Value operand) {
-          Type type = operand.getType();
-          assert(!type.isa<IREE::VM::RefType>());
-          return type == emitc::OpaqueType::get(ctx, "iree_vm_ref_t*");
-        })) {
-      return op.emitError()
-             << "basic block arguments with ref type not supported";
+    auto isNotRefOperand = [&ctx](Value operand) {
+      Type type = operand.getType();
+      assert(!type.isa<IREE::VM::RefType>());
+
+      return type != emitc::OpaqueType::get(ctx, "iree_vm_ref_t*");
+    };
+
+    SmallVector<Value> nonRefOperands;
+    for (Value operand : operands) {
+      if (isNotRefOperand(operand)) {
+        nonRefOperands.push_back(operand);
+      }
     }
 
-    rewriter.replaceOpWithNewOp<mlir::BranchOp>(op, op.dest(),
-                                                op.destOperands());
+    auto funcOp = op.getOperation()->getParentOfType<mlir::FuncOp>();
+    for (auto pair : llvm::enumerate(operands)) {
+      size_t index = pair.index();
+      Value operand = pair.value();
+      if (isNotRefOperand(operand)) {
+        continue;
+      }
+      size_t destOrdinal = op.getOperation()
+                               ->getAttr("dest_ordinal")
+                               .cast<ArrayAttr>()[index]
+                               .cast<IntegerAttr>()
+                               .getInt();
+      Optional<Value> destRef =
+          findRefByOrdinal(rewriter, loc, funcOp, destOrdinal);
+
+      rewriter.create<emitc::CallOp>(
+          /*location=*/loc,
+          /*type=*/TypeRange{},
+          /*callee=*/
+          StringAttr::get(ctx, "iree_vm_ref_retain"),
+          /*args=*/ArrayAttr{},
+          /*templateArgs=*/ArrayAttr{},
+          /*operands=*/ArrayRef<Value>{operand, destRef.getValue()});
+    }
+
+    rewriter.replaceOpWithNewOp<mlir::BranchOp>(op, op.dest(), nonRefOperands);
 
     return success();
   }
 };
 
+// Basic block arguments are emitted as variable assignments in EmitC. Because
+// of that we need to treat ref operands separately here. We remove ref
+// arguments from basic blocks and need to use the ref C API to set the ref
+// variables. The generated IR should look roughly as follows:
+
+// vm.cond_br %cond, ^bb1(%ref : !vm.ref<?>, %int : i32), ^bb2(%ref :
+// !vm.ref<?>, %int : i32) ^bb1(%ref_arg_1 : !vm.ref<?>, %int_arg : i32):
+//   ...
+// ^bb2(%ref_arg_2 : !vm.ref<?>, %int_arg : i32):
+//   ...
+// =>
+// cond_br %cond, ^bb1_dispatch(%ref : !vm.ref<?>, %int : i32),
+// ^bb1_dispatch(%ref : !vm.ref<?>, %int : i32) ^bb1_dispatch:
+//   // populate the variable corresponding to ordinal(%ref_arg_1)
+//   br ^bb1(%int : i32)
+// ^bb2_dispatch:
+//   // populate the variable corresponding to ordinal(%ref_arg_2)
+//   br ^bb2(%int : i32)
+// ^bb1(%int_arg : i32):
+//   ...
+// ^bb2(%int_arg : i32):
+//   ...
 class CondBranchOpConversion
     : public OpConversionPattern<IREE::VM::CondBranchOp> {
   using OpConversionPattern<IREE::VM::CondBranchOp>::OpConversionPattern;
@@ -2073,6 +2154,20 @@ class CondBranchOpConversion
                        {rewriter.getIndexAttr(0), TypeAttr::get(boolType)}),
         /*templateArgs=*/ArrayAttr{},
         /*operands=*/ArrayRef<Value>{condition.getResult()});
+
+    // TODO(simon-camp): Conditionally branch to two new blocks, handle ref
+    // arguments in these and branch unconditionally to the original
+    // destisntations afterwards.
+
+    rewriter.create<emitc::CallOp>(
+        /*location=*/loc,
+        /*type=*/TypeRange{},
+        /*callee=*/
+        StringAttr::get(ctx,
+                        "// TODO: Branch to newly created blocks and set refs"),
+        /*args=*/ArrayAttr{},
+        /*templateArgs=*/ArrayAttr{},
+        /*operands=*/ArrayRef<Value>{});
 
     rewriter.replaceOpWithNewOp<mlir::CondBranchOp>(
         op, conditionI1.getResult(0), op.trueDest(), nonRefTrueDestOperands,
