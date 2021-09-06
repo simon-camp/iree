@@ -406,7 +406,7 @@ LogicalResult annotateFuncOp(IREE::VM::FuncOp &vmFuncOp, mlir::FuncOp &funcOp,
 
   funcOp.getOperation()->setAttr("emitc.static", UnitAttr::get(ctx));
 
-  // Annotate new function with calling convention string which gets used in
+  // Annotate new function with a calling convention string which gets used in
   // the CModuleTarget.
   funcOp.getOperation()->setAttr(
       "vm.calling_convention",
@@ -662,10 +662,15 @@ emitc::CallOp failableCall(
   }
 
   builder.setInsertionPointToEnd(condBlock);
-  builder.create<CondBranchOp>(
+  auto branchOp = builder.create<IREE::VM::CondBranchOp>(
       location, conditionI1.getResult(0),
       negateCondition ? failureBlock : continuationBlock,
       negateCondition ? continuationBlock : failureBlock);
+
+  branchOp.getOperation()->setAttr("true_dest_ordinal",
+                                   builder.getIndexArrayAttr({}));
+  branchOp.getOperation()->setAttr("false_dest_ordinal",
+                                   builder.getIndexArrayAttr({}));
 
   builder.setInsertionPointToStart(continuationBlock);
 
@@ -762,10 +767,15 @@ mlir::CallOp failableCall(
   }
 
   builder.setInsertionPointToEnd(condBlock);
-  builder.create<CondBranchOp>(
+  auto branchOp = builder.create<IREE::VM::CondBranchOp>(
       location, conditionI1.getResult(0),
       negateCondition ? failureBlock : continuationBlock,
       negateCondition ? continuationBlock : failureBlock);
+
+  branchOp.getOperation()->setAttr("true_dest_ordinal",
+                                   builder.getIndexArrayAttr({}));
+  branchOp.getOperation()->setAttr("false_dest_ordinal",
+                                   builder.getIndexArrayAttr({}));
 
   builder.setInsertionPoint(continuationBlock, opPosition);
 
@@ -1353,8 +1363,13 @@ LogicalResult createAPIFunctions(IREE::VM::ModuleOp moduleOp) {
 
     builder.setInsertionPointToEnd(condBlock);
 
-    builder.create<CondBranchOp>(loc, vmInitializeIsOk.getResult(0),
-                                 continuationBlock, failureBlock);
+    auto branchOp = builder.create<IREE::VM::CondBranchOp>(
+        loc, vmInitializeIsOk.getResult(0), continuationBlock, failureBlock);
+
+    branchOp.getOperation()->setAttr("true_dest_ordinal",
+                                     builder.getIndexArrayAttr({}));
+    branchOp.getOperation()->setAttr("false_dest_ordinal",
+                                     builder.getIndexArrayAttr({}));
 
     builder.setInsertionPointToStart(continuationBlock);
 
@@ -2035,6 +2050,7 @@ class BranchOpConversion : public OpConversionPattern<IREE::VM::BranchOp> {
       IREE::VM::BranchOp op, ArrayRef<Value> operands,
       ConversionPatternRewriter &rewriter) const override {
     auto ctx = op.getContext();
+    auto loc = op.getLoc();
 
     auto isNotRefOperand = [&ctx](Value operand) {
       Type type = operand.getType();
@@ -2084,7 +2100,7 @@ class BranchOpConversion : public OpConversionPattern<IREE::VM::BranchOp> {
 // Basic block arguments are emitted as variable assignments in EmitC. Because
 // of that we need to treat ref operands separately here. We remove ref
 // arguments from basic blocks and need to use the ref C API to set the ref
-// variables. The generated IR should look roughly as follows:
+// variables. The generated IR looks roughly as follows:
 
 // vm.cond_br %cond, ^bb1(%ref : !vm.ref<?>, %int : i32), ^bb2(%ref :
 // !vm.ref<?>, %int : i32) ^bb1(%ref_arg_1 : !vm.ref<?>, %int_arg : i32):
@@ -2092,8 +2108,8 @@ class BranchOpConversion : public OpConversionPattern<IREE::VM::BranchOp> {
 // ^bb2(%ref_arg_2 : !vm.ref<?>, %int_arg : i32):
 //   ...
 // =>
-// cond_br %cond, ^bb1_dispatch(%ref : !vm.ref<?>, %int : i32),
-// ^bb1_dispatch(%ref : !vm.ref<?>, %int : i32) ^bb1_dispatch:
+// cond_br %cond, ^bb1_dispatch, ^bb2_dispatch
+// ^bb1_dispatch:
 //   // populate the variable corresponding to ordinal(%ref_arg_1)
 //   br ^bb1(%int : i32)
 // ^bb2_dispatch:
@@ -2155,23 +2171,87 @@ class CondBranchOpConversion
         /*templateArgs=*/ArrayAttr{},
         /*operands=*/ArrayRef<Value>{condition.getResult()});
 
-    // TODO(simon-camp): Conditionally branch to two new blocks, handle ref
-    // arguments in these and branch unconditionally to the original
-    // destisntations afterwards.
+    // If we don't have ref block arguments, we can convert the operation
+    // directly.
+    if (operands.size() == nonRefOperands.size()) {
+      rewriter.replaceOpWithNewOp<mlir::CondBranchOp>(
+          op, conditionI1.getResult(0), op.trueDest(), nonRefTrueDestOperands,
+          op.falseDest(), nonRefFalseDestOperands);
+      return success();
+    }
 
-    rewriter.create<emitc::CallOp>(
-        /*location=*/loc,
-        /*type=*/TypeRange{},
-        /*callee=*/
-        StringAttr::get(ctx,
-                        "// TODO: Branch to newly created blocks and set refs"),
-        /*args=*/ArrayAttr{},
-        /*templateArgs=*/ArrayAttr{},
-        /*operands=*/ArrayRef<Value>{});
+    auto funcOp = op.getOperation()->getParentOfType<mlir::FuncOp>();
+
+    ArrayAttr trueDestOrdinals =
+        op.getOperation()->getAttr("true_dest_ordinal").cast<ArrayAttr>();
+    ArrayAttr falseDestOrdinals =
+        op.getOperation()->getAttr("false_dest_ordinal").cast<ArrayAttr>();
+
+    ArrayRef<Value> trueDestOperands =
+        operands.slice(1, trueDestOrdinals.size());
+    ArrayRef<Value> falseDestOperands =
+        operands.slice(1 + trueDestOrdinals.size(), falseDestOrdinals.size());
+
+    Block *trueDestDispatch;
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      trueDestDispatch = rewriter.createBlock(trueDest);
+
+      for (auto pair : llvm::enumerate(trueDestOperands)) {
+        size_t index = pair.index();
+        Value operand = pair.value();
+        if (isNotRefOperand(operand)) {
+          continue;
+        }
+        size_t destOrdinal =
+            trueDestOrdinals[index].cast<IntegerAttr>().getInt();
+        Optional<Value> destRef =
+            findRefByOrdinal(rewriter, loc, funcOp, destOrdinal);
+
+        rewriter.create<emitc::CallOp>(
+            /*location=*/loc,
+            /*type=*/TypeRange{},
+            /*callee=*/
+            StringAttr::get(ctx, "iree_vm_ref_retain"),
+            /*args=*/ArrayAttr{},
+            /*templateArgs=*/ArrayAttr{},
+            /*operands=*/ArrayRef<Value>{operand, destRef.getValue()});
+      }
+      rewriter.create<mlir::BranchOp>(loc, op.trueDest(),
+                                      nonRefTrueDestOperands);
+    }
+
+    Block *falseDestDispatch;
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      falseDestDispatch = rewriter.createBlock(falseDest);
+
+      for (auto pair : llvm::enumerate(falseDestOperands)) {
+        size_t index = pair.index();
+        Value operand = pair.value();
+        if (isNotRefOperand(operand)) {
+          continue;
+        }
+        size_t destOrdinal =
+            falseDestOrdinals[index].cast<IntegerAttr>().getInt();
+        Optional<Value> destRef =
+            findRefByOrdinal(rewriter, loc, funcOp, destOrdinal);
+
+        rewriter.create<emitc::CallOp>(
+            /*location=*/loc,
+            /*type=*/TypeRange{},
+            /*callee=*/
+            StringAttr::get(ctx, "iree_vm_ref_retain"),
+            /*args=*/ArrayAttr{},
+            /*templateArgs=*/ArrayAttr{},
+            /*operands=*/ArrayRef<Value>{operand, destRef.getValue()});
+      }
+      rewriter.create<mlir::BranchOp>(loc, op.falseDest(),
+                                      nonRefFalseDestOperands);
+    }
 
     rewriter.replaceOpWithNewOp<mlir::CondBranchOp>(
-        op, conditionI1.getResult(0), op.trueDest(), nonRefTrueDestOperands,
-        op.falseDest(), nonRefFalseDestOperands);
+        op, conditionI1.getResult(0), trueDestDispatch, falseDestDispatch);
 
     return success();
   }
@@ -2337,8 +2417,13 @@ class FailOpConversion : public OpConversionPattern<IREE::VM::FailOp> {
       rewriter.create<mlir::ReturnOp>(loc, status.getResult(0));
     }
 
-    rewriter.replaceOpWithNewOp<IREE::VM::CondBranchOp>(
+    auto branchOp = rewriter.replaceOpWithNewOp<IREE::VM::CondBranchOp>(
         op, op.status(), failureBlock, passthroughBlock);
+
+    branchOp.getOperation()->setAttr("true_dest_ordinal",
+                                     rewriter.getIndexArrayAttr({}));
+    branchOp.getOperation()->setAttr("false_dest_ordinal",
+                                     rewriter.getIndexArrayAttr({}));
 
     return success();
   }
@@ -3002,8 +3087,13 @@ class ListGetRefOpConversion
     }
 
     rewriter.setInsertionPointToEnd(condBlock);
-    rewriter.create<CondBranchOp>(loc, invalidType.getResult(0), failureBlock,
-                                  continuationBlock);
+    auto branchOp = rewriter.create<IREE::VM::CondBranchOp>(
+        loc, invalidType.getResult(0), failureBlock, continuationBlock);
+
+    branchOp.getOperation()->setAttr("true_dest_ordinal",
+                                     rewriter.getIndexArrayAttr({}));
+    branchOp.getOperation()->setAttr("false_dest_ordinal",
+                                     rewriter.getIndexArrayAttr({}));
 
     rewriter.replaceOp(getOp, ref.getValue());
 
