@@ -136,7 +136,9 @@ static LogicalResult buildModuleDescriptors(IREE::VM::ModuleOp &moduleOp,
   llvm::raw_ostream &output = emitter.ostream();
 
   auto printCStringView = [](StringRef s) -> std::string {
-    return ("iree_make_cstring_view(\"" + s + "\")").str();
+    // We can't use iree_make_string_view because function calls are not allowed
+    // for constant expressions in C.
+    return ("{\"" + s + "\", " + std::to_string(s.size()) + "}").str();
   };
 
   // exports
