@@ -21,13 +21,14 @@ list(APPEND _TRANSLATE_ARGS "-iree-llvm-link-static")
 list(APPEND _TRANSLATE_ARGS "-iree-llvm-static-library-output-path=simple_mul.o")
 list(APPEND _TRANSLATE_ARGS "${CMAKE_CURRENT_SOURCE_DIR}/simple_mul.mlir")
 list(APPEND _TRANSLATE_ARGS "-o")
-list(APPEND _TRANSLATE_ARGS "simple_mul.h")
+list(APPEND _TRANSLATE_ARGS "simple_mul_emitc.h")
 
 # Custom command for iree-translate to generate static library and bytecode.
 add_custom_command(
   OUTPUT
     ${CMAKE_CURRENT_BINARY_DIR}/simple_mul.h
     ${CMAKE_CURRENT_BINARY_DIR}/simple_mul.o
+    ${CMAKE_CURRENT_BINARY_DIR}/simple_mul_emitc.h
   COMMAND ${_TRANSLATE_TOOL_EXECUTABLE} ${_TRANSLATE_ARGS}
   DEPENDS ${_TRANSLATE_TOOL_EXECUTABLE} "simple_mul.mlir"
 )
@@ -35,12 +36,13 @@ add_custom_command(
 add_custom_target(
   simple_mul_gen
   DEPENDS
-    "simple_mul.h"
+    "simple_mul_emitc.h"
 )
 
 # Tell cmake about the simple_mul library so it will link it.
 add_library(simple_mul_2
  STATIC
+ ${CMAKE_CURRENT_BINARY_DIR}/simple_mul.h
  ${CMAKE_CURRENT_BINARY_DIR}/simple_mul.o)
 
 SET_TARGET_PROPERTIES(
@@ -89,6 +91,7 @@ NAME
 SRCS
   "static_library_demo.c"
   "simple_mul.h"
+  "simple_mul_emitc.h"
 DEPS
   iree::runtime
   iree::hal::local::loaders::static_library_loader

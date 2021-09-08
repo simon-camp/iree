@@ -73,15 +73,65 @@ class VMImportModuleTest : public ::testing::Test {
     return ret_value.i32;
   }
 
+  StatusOr<int32_t> RunFunction(iree_string_view_t function_name) {
+    // Lookup the entry function. This can be cached in an application if
+    // multiple calls will be made.
+    iree_vm_function_t function;
+    IREE_RETURN_IF_ERROR(
+        iree_vm_context_resolve_function(context_, function_name, &function),
+        "unable to resolve entry point");
+
+    // Setup I/O lists and pass in the argument. The result list will be
+    // populated upon return.
+    vm::ref<iree_vm_list_t> input_list;
+    IREE_RETURN_IF_ERROR(iree_vm_list_create(
+        /*element_type=*/nullptr, 0, iree_allocator_system(), &input_list));
+    vm::ref<iree_vm_list_t> output_list;
+    IREE_RETURN_IF_ERROR(iree_vm_list_create(
+        /*element_type=*/nullptr, 1, iree_allocator_system(), &output_list));
+
+    // Invoke the entry function to do our work. Runs synchronously.
+    IREE_RETURN_IF_ERROR(iree_vm_invoke(context_, function,
+                                        /*policy=*/nullptr, input_list.get(),
+                                        output_list.get(),
+                                        iree_allocator_system()));
+
+    // Load the output result.
+    iree_vm_value_t ret_value;
+    IREE_RETURN_IF_ERROR(
+        iree_vm_list_get_value(output_list.get(), 0, &ret_value));
+    return ret_value.i32;
+  }
+
  private:
   iree_vm_instance_t* instance_ = nullptr;
   iree_vm_context_t* context_ = nullptr;
 };
 
-TEST_F(VMImportModuleTest, ImportedCallTest) {
+TEST_F(VMImportModuleTest, SquareTest) {
   IREE_ASSERT_OK_AND_ASSIGN(
-      int32_t v, RunFunction(iree_make_cstring_view("module_a.test_call"), 9));
+      int32_t v,
+      RunFunction(iree_make_cstring_view("module_a.test_square"), 9));
   ASSERT_EQ(v, 81);
+}
+
+TEST_F(VMImportModuleTest, RefNonZeroTest) {
+  IREE_ASSERT_OK_AND_ASSIGN(
+      int32_t v,
+      RunFunction(iree_make_cstring_view("module_a.test_ref_nonzero")));
+  ASSERT_EQ(v, 1);
+}
+
+TEST_F(VMImportModuleTest, RefZeroTest) {
+  IREE_ASSERT_OK_AND_ASSIGN(
+      int32_t v, RunFunction(iree_make_cstring_view("module_a.test_ref_zero")));
+  ASSERT_EQ(v, 1);
+}
+
+TEST_F(VMImportModuleTest, VoidTest) {
+  IREE_ASSERT_OK_AND_ASSIGN(
+      int32_t v, RunFunction(iree_make_cstring_view("module_a.test_void")));
+  ASSERT_EQ(v, 0);
 }
 
 }  // namespace

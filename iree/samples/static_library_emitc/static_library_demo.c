@@ -13,8 +13,8 @@
 #include "iree/hal/local/task_device.h"
 #include "iree/modules/hal/module.h"
 #include "iree/runtime/api.h"
-#include "iree/samples/static_library/simple_mul_c.h"
 #include "iree/samples/static_library_emitc/simple_mul.h"
+#include "iree/samples/static_library_emitc/simple_mul_emitc.h"
 #include "iree/task/api.h"
 
 // A function to create the HAL device from the different backend targets.
@@ -27,19 +27,18 @@ iree_status_t create_device_with_static_loader(iree_hal_device_t** device) {
   iree_hal_task_device_params_initialize(&params);
 
   // Load the statically embedded library
-  // const iree_hal_executable_library_header_t** static_library =
-  //     simple_mul_dispatch_0_library_query(
-  //         IREE_HAL_EXECUTABLE_LIBRARY_LATEST_VERSION, /*reserved=*/NULL);
-  // const iree_hal_executable_library_header_t** libraries[1] =
-  // {static_library};
+  const iree_hal_executable_library_header_t** static_library =
+      simple_mul_dispatch_0_library_query(
+          IREE_HAL_EXECUTABLE_LIBRARY_LATEST_VERSION, /*reserved=*/NULL);
+  const iree_hal_executable_library_header_t** libraries[1] = {static_library};
 
-  // iree_hal_executable_loader_t* library_loader = NULL;
-  // if (iree_status_is_ok(status)) {
-  //   status = iree_hal_static_library_loader_create(
-  //       IREE_ARRAYSIZE(libraries), libraries,
-  //       iree_hal_executable_import_provider_null(), iree_allocator_system(),
-  //       &library_loader);
-  // }
+  iree_hal_executable_loader_t* library_loader = NULL;
+  if (iree_status_is_ok(status)) {
+    status = iree_hal_static_library_loader_create(
+        IREE_ARRAYSIZE(libraries), libraries,
+        iree_hal_executable_import_provider_null(), iree_allocator_system(),
+        &library_loader);
+  }
 
   iree_task_executor_t* executor = NULL;
   if (iree_status_is_ok(status)) {
@@ -49,11 +48,11 @@ iree_status_t create_device_with_static_loader(iree_hal_device_t** device) {
   // Create the device and release the executor and loader afterwards.
   if (iree_status_is_ok(status)) {
     iree_hal_task_device_create(iree_make_cstring_view("dylib"), &params,
-                                executor, 0, NULL, iree_allocator_system(),
-                                device);
+                                executor, 1, &library_loader,
+                                iree_allocator_system(), device);
   }
   iree_task_executor_release(executor);
-  // iree_hal_executable_loader_release(library_loader);
+  iree_hal_executable_loader_release(library_loader);
 
   return status;
 }

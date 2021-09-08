@@ -191,9 +191,10 @@ static LogicalResult buildModuleDescriptors(IREE::VM::ModuleOp &moduleOp,
     // Empty list placeholder.
     output << "    {0},\n";
   } else {
-    // sort import ops
+    // sort import ops by ordinal
     llvm::sort(importOps, [](auto &lhs, auto &rhs) {
-      return lhs.getName().compare(rhs.getName()) < 0;
+      return lhs.ordinal().getValue().getZExtValue() <
+             rhs.ordinal().getValue().getZExtValue();
     });
     for (auto importOp : importOps) {
       output << "{" << printCStringView(importOp.getName()) << "},\n";
