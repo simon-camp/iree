@@ -136,6 +136,7 @@ static iree_status_t call_0i_i_import(iree_vm_stack_t* stack,
                                       const iree_vm_function_t* import,
                                       int32_t arg0, int32_t* res0) {
   iree_vm_abi_i_t arguments;
+  memset(&arguments, 0, sizeof(arguments));
   arguments.i0 = arg0;
 
   iree_vm_abi_i_t results;
@@ -161,6 +162,7 @@ static iree_status_t call_0r_r_import(iree_vm_stack_t* stack,
                                       iree_vm_ref_t* arg0,
                                       iree_vm_ref_t* res0) {
   iree_vm_abi_r_t arguments;
+  memset(&arguments, 0, sizeof(arguments));
   iree_vm_ref_assign(arg0, &arguments.r0);
 
   iree_vm_abi_r_t results;
@@ -185,6 +187,7 @@ static iree_status_t call_0r_v_import(iree_vm_stack_t* stack,
                                       const iree_vm_function_t* import,
                                       iree_vm_ref_t* arg0) {
   iree_vm_abi_r_t arguments;
+  memset(&arguments, 0, sizeof(arguments));
   iree_vm_ref_assign(arg0, &arguments.r0);
 
   iree_vm_abi_v_t results;
@@ -210,6 +213,7 @@ static iree_status_t call_0rii_r_import(iree_vm_stack_t* stack,
                                         iree_vm_ref_t* arg0, int32_t arg1,
                                         int32_t arg2, iree_vm_ref_t* res0) {
   iree_vm_abi_rii_t arguments;
+  memset(&arguments, 0, sizeof(arguments));
   iree_vm_ref_assign(arg0, &arguments.r0);
   arguments.i1 = arg1;
   arguments.i2 = arg2;
@@ -238,6 +242,7 @@ static iree_status_t call_0riii_r_import(iree_vm_stack_t* stack,
                                          int32_t arg2, int32_t arg3,
                                          iree_vm_ref_t* res0) {
   iree_vm_abi_riii_t arguments;
+  memset(&arguments, 0, sizeof(arguments));
   iree_vm_ref_assign(arg0, &arguments.r0);
   arguments.i1 = arg1;
   arguments.i2 = arg2;
@@ -266,6 +271,7 @@ static iree_status_t call_0riii_v_import(iree_vm_stack_t* stack,
                                          iree_vm_ref_t* arg0, int32_t arg1,
                                          int32_t arg2, int32_t arg3) {
   iree_vm_abi_riii_t arguments;
+  memset(&arguments, 0, sizeof(arguments));
   iree_vm_ref_assign(arg0, &arguments.r0);
   arguments.i1 = arg1;
   arguments.i2 = arg2;
@@ -293,6 +299,7 @@ static iree_status_t call_0rr_v_import(iree_vm_stack_t* stack,
                                        iree_vm_ref_t* arg0,
                                        iree_vm_ref_t* arg1) {
   iree_vm_abi_rr_t arguments;
+  memset(&arguments, 0, sizeof(arguments));
   iree_vm_ref_assign(arg0, &arguments.r0);
   iree_vm_ref_assign(arg1, &arguments.r1);
 
@@ -320,6 +327,7 @@ static iree_status_t call_0rriiii_v_import(iree_vm_stack_t* stack,
                                            int32_t arg3, int32_t arg4,
                                            int32_t arg5) {
   iree_vm_abi_rriiii_t arguments;
+  memset(&arguments, 0, sizeof(arguments));
   iree_vm_ref_assign(arg0, &arguments.r0);
   iree_vm_ref_assign(arg1, &arguments.r1);
   arguments.i2 = arg2;
@@ -351,6 +359,7 @@ static iree_status_t call_0rrr_ii_import(iree_vm_stack_t* stack,
                                          iree_vm_ref_t* arg2, int32_t* res0,
                                          int32_t* res1) {
   iree_vm_abi_rrr_t arguments;
+  memset(&arguments, 0, sizeof(arguments));
   iree_vm_ref_assign(arg0, &arguments.r0);
   iree_vm_ref_assign(arg1, &arguments.r1);
   iree_vm_ref_assign(arg2, &arguments.r2);
@@ -378,6 +387,7 @@ static iree_status_t call_0v_r_import(iree_vm_stack_t* stack,
                                       const iree_vm_function_t* import,
                                       iree_vm_ref_t* res0) {
   iree_vm_abi_v_t arguments;
+  memset(&arguments, 0, sizeof(arguments));
   iree_vm_abi_r_t results;
   memset(&results, 0, sizeof(results));
   iree_vm_function_call_t call;
@@ -399,6 +409,7 @@ static iree_status_t call_0v_r_import(iree_vm_stack_t* stack,
 static iree_status_t call_0v_v_import(iree_vm_stack_t* stack,
                                       const iree_vm_function_t* import) {
   iree_vm_abi_v_t arguments;
+  memset(&arguments, 0, sizeof(arguments));
   iree_vm_abi_v_t results;
   memset(&results, 0, sizeof(results));
   iree_vm_function_call_t call;
