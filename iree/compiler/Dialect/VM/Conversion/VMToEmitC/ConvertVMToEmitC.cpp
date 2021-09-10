@@ -595,7 +595,7 @@ LogicalResult convertFuncOp(IREE::VM::FuncOp funcOp) {
         continue;
       }
       auto ordinal = registerAllocation.mapToRegister(blockArg).ordinal();
-      auto ref = findRef(builder, loc, newFuncOp, blockArg);
+      auto ref = findRefByOrdinal(builder, loc, newFuncOp, ordinal);
       if (!ref.hasValue()) {
         return newFuncOp.emitError()
                << "searched for ref with ordinal #" << ordinal << ", have "
@@ -1662,18 +1662,16 @@ class CallOpConversion : public OpConversionPattern<CallOpTy> {
         op->emitError() << "expected the last segment to be variadic";
       }
 
-      size_t numOperands = variadicOp.getNumOperands();
-      size_t numStaticOperands = numSegments - numVariadicSegments;
-      size_t numVariadicOperands = numOperands - numStaticOperands;
+      size_t numSpans = lastSegmentSize.getSExtValue();
 
       // TODO(simon-camp): Use the args attribute of the call op to specify
       // the constant,
-      auto numVariadic = rewriter.create<emitc::ConstantOp>(
+      auto numSpansOp = rewriter.create<emitc::ConstantOp>(
           /*location=*/loc,
           /*resultType=*/rewriter.getIndexType(),
-          /*value=*/rewriter.getIndexAttr(numVariadicOperands));
+          /*value=*/rewriter.getIndexAttr(numSpans));
 
-      updatedOperands.push_back(numVariadic.getResult());
+      updatedOperands.push_back(numSpansOp.getResult());
     }
 
     if (failed(updateOperands(op, operands, rewriter, updatedOperands,
