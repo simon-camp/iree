@@ -526,10 +526,10 @@ emitc::CallOp returnIfError(OpBuilder &builder, Location location,
                       blockBuilder, /*negateCondition=*/true);
 }
 
-emitc::CallOp failListNull(OpBuilder &builder, Location location, Type type,
-                           StringAttr callee, ArrayAttr args,
-                           ArrayRef<Value> operands,
-                           IREE::VM::EmitCTypeConverter &typeConverter) {
+emitc::CallOp failContainerNull(OpBuilder &builder, Location location,
+                                Type type, StringAttr callee, ArrayAttr args,
+                                ArrayRef<Value> operands,
+                                IREE::VM::EmitCTypeConverter &typeConverter) {
   auto blockBuilder = [&builder, &location,
                        &typeConverter](emitc::CallOp &callOp) {
     auto ctx = builder.getContext();
@@ -2369,7 +2369,7 @@ class CallOpConversion : public OpConversionPattern<CallOpTy> {
         /*typeConverter=*/
         *this->template getTypeConverter<IREE::VM::EmitCTypeConverter>());
 
-    if (failed(updateResults(op, rewriter, resultOperands))) {
+    if (failed(updateResultUsers(op, rewriter, resultOperands))) {
       return failure();
     }
 
@@ -2442,7 +2442,7 @@ class CallOpConversion : public OpConversionPattern<CallOpTy> {
         rewriter, loc, callee, updatedOperands,
         *this->template getTypeConverter<IREE::VM::EmitCTypeConverter>());
 
-    if (failed(updateResults(op, rewriter, resultOperands))) {
+    if (failed(updateResultUsers(op, rewriter, resultOperands))) {
       return failure();
     }
 
@@ -2569,9 +2569,9 @@ class CallOpConversion : public OpConversionPattern<CallOpTy> {
     return refPtr;
   }
 
-  LogicalResult updateResults(Operation *op,
-                              ConversionPatternRewriter &rewriter,
-                              SmallVector<Value, 4> &resultOperands) const {
+  LogicalResult updateResultUsers(Operation *op,
+                                  ConversionPatternRewriter &rewriter,
+                                  SmallVector<Value, 4> &resultOperands) const {
     for (auto &pair : llvm::enumerate(op->getResults())) {
       size_t index = pair.index();
       OpResult result = pair.value();
@@ -3471,20 +3471,21 @@ class GlobalStoreOpConversion : public OpConversionPattern<StoreOpTy> {
   StringRef funcName;
 };
 
-// Convert vm list operations to two emitc calls. The wrapping ref pointer
-// is first dereferenced and the result is used as the argument of the
-// specified function name.
+// Convert vm operations with wrapped containers to multiple emitc calls. The
+// wrapping ref pointers are first dereferenced and the results are used as the
+// arguments of the specified function name.
 template <typename SrcOpTy>
-class ListOpConversion : public OpConversionPattern<SrcOpTy> {
+class ContainerOpConversion : public OpConversionPattern<SrcOpTy> {
   using Adaptor = typename SrcOpTy::Adaptor;
   using OpConversionPattern<SrcOpTy>::OpConversionPattern;
 
  public:
-  ListOpConversion(TypeConverter &typeConverter, MLIRContext *context,
-                   StringRef funcName, size_t listArgumentIndex, bool failable)
+  ContainerOpConversion(TypeConverter &typeConverter, MLIRContext *context,
+                        StringRef funcName, DenseSet<size_t> refArgumentIndices,
+                        bool failable)
       : OpConversionPattern<SrcOpTy>(typeConverter, context),
         funcName(funcName),
-        listArgumentIndex(listArgumentIndex),
+        refArgumentIndices(refArgumentIndices),
         failable(failable) {}
 
  private:
@@ -3497,33 +3498,58 @@ class ListOpConversion : public OpConversionPattern<SrcOpTy> {
     IREE::VM::EmitCTypeConverter *typeConverter =
         this->template getTypeConverter<IREE::VM::EmitCTypeConverter>();
 
-    if (listArgumentIndex >= adaptor.getOperands().size()) {
-      return op.emitError() << " index for list argument out of range";
+    SmallVector<Value, 4> unwrappedOperands;
+    for (auto &operand : llvm::enumerate(adaptor.getOperands())) {
+      if (refArgumentIndices.contains(operand.index())) {
+        Type originalType =
+            op.getOperation()->getOperand(operand.index()).getType();
+
+        assert(originalType.isa<IREE::VM::RefType>() && "expected ref type");
+
+        Type objectType =
+            originalType.cast<IREE::VM::RefType>().getObjectType();
+
+        Optional<std::pair<StringRef, StringRef>> vmNames =
+            TypeSwitch<Type, Optional<std::pair<StringRef, StringRef>>>(
+                objectType)
+                .Case<IREE::VM::ListType>([&](auto t) {
+                  return std::make_pair(StringRef("iree_vm_list_t"),
+                                        StringRef("iree_vm_list_deref"));
+                })
+                .template Case<IREE::VM::BufferType>([&](auto t) {
+                  return std::make_pair(StringRef("iree_vm_buffer_t"),
+                                        StringRef("iree_vm_buffer_deref"));
+                })
+                .Default([](Type) { return std::nullopt; });
+
+        if (!vmNames.has_value()) {
+          return op.emitOpError() << "object type not handled";
+        }
+
+        StringRef vmType = std::get<0>(vmNames.value());
+        StringRef vmDerefCallee = std::get<1>(vmNames.value());
+
+        Value refValue =
+            emitc_builders::contentsOf(rewriter, loc, operand.value());
+        auto derefOp = failContainerNull(
+            /*rewriter=*/rewriter,
+            /*location=*/loc,
+            /*type=*/
+            emitc::PointerType::get(emitc::OpaqueType::get(ctx, vmType)),
+            /*callee=*/StringAttr::get(ctx, vmDerefCallee),
+            /*args=*/ArrayAttr{},
+            /*operands=*/ArrayRef<Value>{refValue},
+            /*typeConverter=*/*typeConverter);
+        unwrappedOperands.push_back(derefOp.getResult(0));
+      } else {
+        unwrappedOperands.push_back(operand.value());
+      }
     }
 
-    Value listOperand = adaptor.getOperands()[listArgumentIndex];
-
-    Value refValue = emitc_builders::contentsOf(rewriter, loc, listOperand);
-
-    auto listDerefOp = failListNull(
-        /*rewriter=*/rewriter,
-        /*location=*/loc,
-        /*type=*/
-        emitc::PointerType::get(emitc::OpaqueType::get(ctx, "iree_vm_list_t")),
-        /*callee=*/StringAttr::get(ctx, "iree_vm_list_deref"),
-        /*args=*/ArrayAttr{},
-        /*operands=*/ArrayRef<Value>{refValue},
-        /*typeConverter=*/*typeConverter);
-
-    // Replace the one list argument (which is wrapped in a ref) with the
-    // unwrapped list.
-    SmallVector<Value, 4> updatedOperands;
-    for (auto &operand : llvm::enumerate(adaptor.getOperands())) {
-      if (operand.index() == listArgumentIndex) {
-        updatedOperands.push_back(listDerefOp.getResult(0));
-      } else {
-        updatedOperands.push_back(operand.value());
-      }
+    SmallVector<Value, 4> resultOperands;
+    if (failed(patchOperands(op, adaptor, rewriter, unwrappedOperands,
+                             resultOperands))) {
+      return op.emitError() << "failed to patch operands";
     }
 
     if (failable) {
@@ -3532,10 +3558,19 @@ class ListOpConversion : public OpConversionPattern<SrcOpTy> {
           /*location=*/loc,
           /*callee=*/StringAttr::get(ctx, funcName),
           /*args=*/ArrayAttr{},
-          /*operands=*/ArrayRef<Value>(updatedOperands),
+          /*operands=*/ArrayRef<Value>(unwrappedOperands),
           /*typeConverter=*/*typeConverter);
 
-      rewriter.replaceOp(op, ArrayRef<Value>{});
+      if (failed(patchResults(op, adaptor, rewriter, unwrappedOperands,
+                              resultOperands))) {
+        return op.emitError() << "failed to patch operands";
+      }
+
+      if (failed(updateResults(op.getOperation(), rewriter, resultOperands))) {
+        return failure();
+      }
+
+      rewriter.eraseOp(op);
     } else {
       rewriter.replaceOpWithNewOp<emitc::CallOp>(
           /*op=*/op,
@@ -3543,7 +3578,529 @@ class ListOpConversion : public OpConversionPattern<SrcOpTy> {
           /*callee=*/StringAttr::get(ctx, funcName),
           /*args=*/ArrayAttr{},
           /*templateArgs=*/ArrayAttr{},
-          /*operands=*/ArrayRef<Value>(updatedOperands));
+          /*operands=*/ArrayRef<Value>(unwrappedOperands));
+    }
+
+    return success();
+  }
+
+  // default behaviour
+  LogicalResult patchOperands(Operation *op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    if (!isa<IREE::VM::ListReserveOp, IREE::VM::ListResizeOp,
+             IREE::VM::ListSizeOp, IREE::VM::BufferLengthOp,
+             IREE::VM::BufferCopyOp>(op)) {
+      return op->emitError() << "either add this op to the allowed list to get "
+                                "the default behaviour or overload the "
+                                "`patchOperands` method.";
+    }
+    if (failable) {
+      if (failed(createDefaultOutOperands(op, rewriter, operands, results))) {
+        return failure();
+      }
+    }
+    return success();
+  }
+
+  LogicalResult patchResults(Operation *op, Adaptor adaptor,
+                             ConversionPatternRewriter &rewriter,
+                             SmallVector<Value, 4> &operands,
+                             SmallVector<Value, 4> &results) const {
+    if (!isa<IREE::VM::ListReserveOp, IREE::VM::ListResizeOp,
+             IREE::VM::ListSizeOp, IREE::VM::BufferLengthOp,
+             IREE::VM::BufferCopyOp, IREE::VM::BufferFillF32Op,
+             IREE::VM::BufferFillF64Op, IREE::VM::BufferFillI8Op,
+             IREE::VM::BufferFillI16Op, IREE::VM::BufferFillI32Op,
+             IREE::VM::BufferFillI64Op, IREE::VM::BufferStoreF32Op,
+             IREE::VM::BufferStoreF64Op, IREE::VM::BufferStoreI8Op,
+             IREE::VM::BufferStoreI16Op, IREE::VM::BufferStoreI32Op,
+             IREE::VM::BufferStoreI64Op>(op)) {
+      return op->emitError() << "either add this op to the allowed list to get "
+                                "the default behaviour or overload the "
+                                "`patchResults` method.";
+    }
+    return success();
+  }
+
+  // BufferCompareOp
+  LogicalResult patchOperands(IREE::VM::BufferCompareOp op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    // This op returns an I32 but the C function expects a bool* as out
+    // argument.
+    auto loc = op.getLoc();
+
+    Value boolValue =
+        emitc_builders::allocateVariable(rewriter, loc, rewriter.getI1Type());
+    Value boolPtr = emitc_builders::addressOf(rewriter, loc, boolValue);
+
+    operands.push_back(boolPtr);
+    return success();
+  }
+
+  LogicalResult patchResults(IREE::VM::BufferCompareOp op, Adaptor adaptor,
+                             ConversionPatternRewriter &rewriter,
+                             SmallVector<Value, 4> &operands,
+                             SmallVector<Value, 4> &results) const {
+    // This op returns an I32 but the C function expects a bool* as out
+    // argument.
+    auto ctx = op.getContext();
+    auto loc = op.getLoc();
+
+    Value boolPtr = operands.back();
+    Value boolValue = boolPtr.getDefiningOp()->getOperand(0);
+
+    Value i32Value =
+        rewriter
+            .create<emitc::CastOp>(/*location=*/loc,
+                                   /*type=*/IntegerType::get(ctx, 32),
+                                   /*operand=*/boolValue)
+            .getResult();
+    results.push_back(i32Value);
+
+    return success();
+  }
+
+  // BufferFill*Op
+  LogicalResult patchOperands(IREE::VM::BufferFillF32Op op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getF32Type();
+    return patchBufferFillOperands(op, adaptor, rewriter, operands, results,
+                                   elementType);
+  }
+
+  LogicalResult patchOperands(IREE::VM::BufferFillF64Op op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getF64Type();
+    return patchBufferFillOperands(op, adaptor, rewriter, operands, results,
+                                   elementType);
+  }
+
+  LogicalResult patchOperands(IREE::VM::BufferFillI8Op op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(8);
+    return patchBufferFillOperands(op, adaptor, rewriter, operands, results,
+                                   elementType);
+  }
+
+  LogicalResult patchOperands(IREE::VM::BufferFillI16Op op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(16);
+    return patchBufferFillOperands(op, adaptor, rewriter, operands, results,
+                                   elementType);
+  }
+
+  LogicalResult patchOperands(IREE::VM::BufferFillI32Op op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(32);
+    return patchBufferFillOperands(op, adaptor, rewriter, operands, results,
+                                   elementType);
+  }
+
+  LogicalResult patchOperands(IREE::VM::BufferFillI64Op op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(64);
+    return patchBufferFillOperands(op, adaptor, rewriter, operands, results,
+                                   elementType);
+  }
+
+  LogicalResult patchBufferFillOperands(Operation *op, Adaptor adaptor,
+                                        ConversionPatternRewriter &rewriter,
+                                        SmallVector<Value, 4> &operands,
+                                        SmallVector<Value, 4> &results,
+                                        Type elementType) const {
+    auto loc = op->getLoc();
+
+    // Pass value by pointer
+    const size_t valueArgIndex = 3;
+    Value value = operands[valueArgIndex];
+    Value valuePtr = emitc_builders::addressOf(rewriter, loc, value);
+    operands[valueArgIndex] = valuePtr;
+
+    // Divide operand for element_count by byte width
+    const size_t elementCountArgIndex = 2;
+    Value elementCount = operands[elementCountArgIndex];
+
+    Value elementLength =
+        emitc_builders::sizeOf(rewriter, loc, TypeAttr::get(elementType));
+    Value updatedElementCount = emitc_builders::binaryOperator(
+        rewriter, loc, emitc_builders::BinaryOperator::DIVISION, elementCount,
+        elementLength, elementCount.getType());
+    operands[elementCountArgIndex] = updatedElementCount;
+
+    // Insert operand for element_length
+    operands.insert(operands.begin() + elementCountArgIndex + 1, elementLength);
+    return success();
+  }
+
+  // BufferLoad*Op
+  LogicalResult patchOperands(IREE::VM::BufferLoadF32Op op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getF32Type();
+    return patchBufferLoadOperands(op, adaptor, rewriter, operands, results,
+                                   elementType);
+  }
+
+  LogicalResult patchResults(IREE::VM::BufferLoadF32Op op, Adaptor adaptor,
+                             ConversionPatternRewriter &rewriter,
+                             SmallVector<Value, 4> &operands,
+                             SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getF32Type();
+    return patchBufferLoadResults(op, adaptor, rewriter, operands, results,
+                                  elementType);
+  }
+
+  LogicalResult patchOperands(IREE::VM::BufferLoadF64Op op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getF64Type();
+    return patchBufferLoadOperands(op, adaptor, rewriter, operands, results,
+                                   elementType);
+  }
+
+  LogicalResult patchResults(IREE::VM::BufferLoadF64Op op, Adaptor adaptor,
+                             ConversionPatternRewriter &rewriter,
+                             SmallVector<Value, 4> &operands,
+                             SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getF64Type();
+    return patchBufferLoadResults(op, adaptor, rewriter, operands, results,
+                                  elementType);
+  }
+
+  LogicalResult patchOperands(IREE::VM::BufferLoadI8SOp op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(8, true);
+    return patchBufferLoadOperands(op, adaptor, rewriter, operands, results,
+                                   elementType);
+  }
+
+  LogicalResult patchResults(IREE::VM::BufferLoadI8SOp op, Adaptor adaptor,
+                             ConversionPatternRewriter &rewriter,
+                             SmallVector<Value, 4> &operands,
+                             SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(8, true);
+    return patchBufferLoadResults<IREE::VM::ExtI8I32SOp>(
+        op, adaptor, rewriter, operands, results, elementType);
+  }
+
+  LogicalResult patchOperands(IREE::VM::BufferLoadI8UOp op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(8, false);
+    return patchBufferLoadOperands(op, adaptor, rewriter, operands, results,
+                                   elementType);
+  }
+
+  LogicalResult patchResults(IREE::VM::BufferLoadI8UOp op, Adaptor adaptor,
+                             ConversionPatternRewriter &rewriter,
+                             SmallVector<Value, 4> &operands,
+                             SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(8, false);
+    return patchBufferLoadResults<IREE::VM::ExtI8I32UOp>(
+        op, adaptor, rewriter, operands, results, elementType);
+  }
+
+  LogicalResult patchOperands(IREE::VM::BufferLoadI16SOp op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(16, true);
+    return patchBufferLoadOperands(op, adaptor, rewriter, operands, results,
+                                   elementType);
+  }
+
+  LogicalResult patchResults(IREE::VM::BufferLoadI16SOp op, Adaptor adaptor,
+                             ConversionPatternRewriter &rewriter,
+                             SmallVector<Value, 4> &operands,
+                             SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(16, true);
+    return patchBufferLoadResults<IREE::VM::ExtI16I32SOp>(
+        op, adaptor, rewriter, operands, results, elementType);
+  }
+
+  LogicalResult patchOperands(IREE::VM::BufferLoadI16UOp op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(16, false);
+    return patchBufferLoadOperands(op, adaptor, rewriter, operands, results,
+                                   elementType);
+  }
+
+  LogicalResult patchResults(IREE::VM::BufferLoadI16UOp op, Adaptor adaptor,
+                             ConversionPatternRewriter &rewriter,
+                             SmallVector<Value, 4> &operands,
+                             SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(16, false);
+    return patchBufferLoadResults<IREE::VM::ExtI16I32UOp>(
+        op, adaptor, rewriter, operands, results, elementType);
+  }
+
+  LogicalResult patchOperands(IREE::VM::BufferLoadI32Op op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(32, true);
+    return patchBufferLoadOperands(op, adaptor, rewriter, operands, results,
+                                   elementType);
+  }
+
+  LogicalResult patchResults(IREE::VM::BufferLoadI32Op op, Adaptor adaptor,
+                             ConversionPatternRewriter &rewriter,
+                             SmallVector<Value, 4> &operands,
+                             SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(32, true);
+    return patchBufferLoadResults(op, adaptor, rewriter, operands, results,
+                                  elementType);
+  }
+
+  LogicalResult patchOperands(IREE::VM::BufferLoadI64Op op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(64, true);
+    return patchBufferLoadOperands(op, adaptor, rewriter, operands, results,
+                                   elementType);
+  }
+
+  LogicalResult patchResults(IREE::VM::BufferLoadI64Op op, Adaptor adaptor,
+                             ConversionPatternRewriter &rewriter,
+                             SmallVector<Value, 4> &operands,
+                             SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(64, true);
+    return patchBufferLoadResults(op, adaptor, rewriter, operands, results,
+                                  elementType);
+  }
+
+  LogicalResult patchBufferLoadOperands(Operation *op, Adaptor adaptor,
+                                        ConversionPatternRewriter &rewriter,
+                                        SmallVector<Value, 4> &operands,
+                                        SmallVector<Value, 4> &results,
+                                        Type elementType) const {
+    auto ctx = op->getContext();
+    auto loc = op->getLoc();
+
+    // Multiply offset by byte width
+    const size_t offsetArgIndex = 1;
+    Value offset = operands[offsetArgIndex];
+
+    Value elementLength =
+        emitc_builders::sizeOf(rewriter, loc, TypeAttr::get(elementType));
+    Value updatedOffset = emitc_builders::binaryOperator(
+        rewriter, loc, emitc_builders::BinaryOperator::PRODUCT, offset,
+        elementLength, offset.getType());
+    operands[offsetArgIndex] = updatedOffset;
+
+    // Add operand for target
+    Value resultValue =
+        emitc_builders::allocateVariable(rewriter, loc, elementType);
+    Value resultPtr = emitc_builders::addressOf(rewriter, loc, resultValue);
+    operands.push_back(resultPtr);
+
+    // Add operand for element count
+    Value elementCount =
+        rewriter
+            .create<emitc::ConstantOp>(
+                /*location=*/loc,
+                /*resultType=*/emitc::OpaqueType::get(ctx, "iree_host_size_t"),
+                /*value=*/emitc::OpaqueAttr::get(ctx, "1"))
+            .getResult();
+    operands.push_back(elementCount);
+
+    // Add operand for element length
+    operands.push_back(elementLength);
+
+    return success();
+  }
+
+  template <typename ExtendOp = IREE::VM::ExtI8I32SOp>
+  LogicalResult patchBufferLoadResults(Operation *op, Adaptor adaptor,
+                                       ConversionPatternRewriter &rewriter,
+                                       SmallVector<Value, 4> &operands,
+                                       SmallVector<Value, 4> &results,
+                                       Type elementType) const {
+    auto ctx = op->getContext();
+    auto loc = op->getLoc();
+
+    const int targetPointerArgIndex = 2;
+    Value targetPtr = operands[targetPointerArgIndex];
+    Value target = targetPtr.getDefiningOp()->getOperand(0);
+
+    if (elementType.getIntOrFloatBitWidth() < 32) {
+      Value target32 = rewriter
+                           .create<ExtendOp>(
+                               /*location=*/loc,
+                               /*type=*/IntegerType::get(ctx, 32),
+                               /*operand=*/target)
+                           .getResult();
+
+      results.push_back(target32);
+    } else {
+      results.push_back(target);
+    }
+
+    return success();
+  }
+
+  // BufferStore*Op
+  LogicalResult patchOperands(IREE::VM::BufferStoreF32Op op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getF32Type();
+    return patchBufferStoreOperands(op, adaptor, rewriter, operands, results,
+                                    elementType);
+  }
+
+  LogicalResult patchOperands(IREE::VM::BufferStoreF64Op op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getF64Type();
+    return patchBufferStoreOperands(op, adaptor, rewriter, operands, results,
+                                    elementType);
+  }
+
+  LogicalResult patchOperands(IREE::VM::BufferStoreI8Op op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(8);
+    return patchBufferStoreOperands(op, adaptor, rewriter, operands, results,
+                                    elementType);
+  }
+  LogicalResult patchOperands(IREE::VM::BufferStoreI16Op op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(16);
+    return patchBufferStoreOperands(op, adaptor, rewriter, operands, results,
+                                    elementType);
+  }
+
+  LogicalResult patchOperands(IREE::VM::BufferStoreI32Op op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(32);
+    return patchBufferStoreOperands(op, adaptor, rewriter, operands, results,
+                                    elementType);
+  }
+
+  LogicalResult patchOperands(IREE::VM::BufferStoreI64Op op, Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &operands,
+                              SmallVector<Value, 4> &results) const {
+    Type elementType = rewriter.getIntegerType(64);
+    return patchBufferStoreOperands(op, adaptor, rewriter, operands, results,
+                                    elementType);
+  }
+
+  LogicalResult patchBufferStoreOperands(Operation *op, Adaptor adaptor,
+                                         ConversionPatternRewriter &rewriter,
+                                         SmallVector<Value, 4> &operands,
+                                         SmallVector<Value, 4> &results,
+                                         Type elementType) const {
+    auto ctx = op->getContext();
+    auto loc = op->getLoc();
+
+    // Operand order:
+    // VM (buffer, offset, value)
+    // C (&value, buffer, offset, count, length)
+
+    // Multiply offset by byte width
+    const size_t offsetArgIndex = 1;
+    Value offset = operands[offsetArgIndex];
+
+    Value elementLength =
+        emitc_builders::sizeOf(rewriter, loc, TypeAttr::get(elementType));
+    Value updatedOffset = emitc_builders::binaryOperator(
+        rewriter, loc, emitc_builders::BinaryOperator::PRODUCT, offset,
+        elementLength, offset.getType());
+    operands[offsetArgIndex] = updatedOffset;
+
+    // Insert operand for value
+    Value value = operands.back();
+    Value valuePtr = emitc_builders::addressOf(rewriter, loc, value);
+    operands.insert(operands.begin(), valuePtr);
+
+    // Add operand for count (overwriting the original value operand)
+    Value elementCount =
+        rewriter
+            .create<emitc::ConstantOp>(
+                /*location=*/loc,
+                /*resultType=*/emitc::OpaqueType::get(ctx, "iree_host_size_t"),
+                /*value=*/emitc::OpaqueAttr::get(ctx, "1"))
+            .getResult();
+    operands[operands.size() - 1] = elementCount;
+
+    // Add operand for element length
+    operands.push_back(elementLength);
+
+    return success();
+  }
+
+  LogicalResult createDefaultOutOperands(Operation *op,
+                                         ConversionPatternRewriter &rewriter,
+                                         SmallVector<Value, 4> &operands,
+                                         SmallVector<Value, 4> &results) const {
+    auto loc = op->getLoc();
+    IREE::VM::EmitCTypeConverter *typeConverter =
+        this->template getTypeConverter<IREE::VM::EmitCTypeConverter>();
+
+    for (OpResult result : op->getResults()) {
+      if (result.getType().isa<IREE::VM::RefType>()) {
+        Optional<Value> ref = typeConverter->materializeRef(result);
+
+        if (!ref.has_value()) {
+          return op->emitError() << "local ref not found";
+        }
+
+        results.push_back(ref.value());
+        operands.push_back(ref.value());
+      } else {
+        Value resultValue =
+            emitc_builders::allocateVariable(rewriter, loc, result.getType());
+        Value resultPtr = emitc_builders::addressOf(rewriter, loc, resultValue);
+
+        results.push_back(resultValue);
+        operands.push_back(resultPtr);
+      }
+    }
+    return success();
+  }
+
+  LogicalResult updateResults(Operation *op,
+                              ConversionPatternRewriter &rewriter,
+                              SmallVector<Value, 4> &results) const {
+    for (auto &pair : llvm::enumerate(op->getResults())) {
+      size_t index = pair.index();
+      OpResult result = pair.value();
+
+      if (!result.getType().isa<IREE::VM::RefType>()) {
+        result.replaceAllUsesWith(results[index]);
+      }
     }
 
     return success();
@@ -3551,53 +4108,205 @@ class ListOpConversion : public OpConversionPattern<SrcOpTy> {
 
   StringRef funcName;
 
-  // The index of the list argument. This gets replaced in the conversion.
-  size_t listArgumentIndex;
+  // The indices of the wrapped arguments.
+  DenseSet<size_t> refArgumentIndices;
 
   // Whether the function call can fail, i.e. it returns an iree_status_t.
   bool failable;
 };
 
-class ListAllocOpConversion
-    : public OpConversionPattern<IREE::VM::ListAllocOp> {
-  using Adaptor = IREE::VM::ListAllocOp::Adaptor;
-  using OpConversionPattern<IREE::VM::ListAllocOp>::OpConversionPattern;
+template <typename SrcOpTy>
+class ContainerAllocOpConversion : public OpConversionPattern<SrcOpTy> {
+  using Adaptor = typename SrcOpTy::Adaptor;
+  using OpConversionPattern<SrcOpTy>::OpConversionPattern;
+
+  // Bundle function and type names based on the container type
+  struct CNames {
+    std::string type;
+    std::string typeId;
+    std::string constructor;
+  };
 
   LogicalResult matchAndRewrite(
-      IREE::VM::ListAllocOp allocOp, Adaptor adaptor,
+      SrcOpTy op, Adaptor adaptor,
       ConversionPatternRewriter &rewriter) const override {
-    auto ctx = allocOp.getContext();
-    auto loc = allocOp.getLoc();
+    auto ctx = op.getContext();
+    auto loc = op.getLoc();
 
-    Type convertedType = typeConverter->convertType(allocOp.getType());
+    Type objectType =
+        op.getType().template cast<IREE::VM::RefType>().getObjectType();
+    Optional<Type> elementType = extractElementType(ctx, objectType);
+    Optional<CNames> cNames = extractCNames(op);
 
-    if (!convertedType) {
-      return allocOp.emitOpError() << "type conversion failed";
+    if (!elementType.has_value() || !cNames.has_value()) {
+      return op.emitError() << "unknown container type";
     }
 
-    auto elementType = allocOp.getType()
-                           .cast<IREE::VM::RefType>()
-                           .getObjectType()
-                           .cast<IREE::VM::ListType>()
-                           .getElementType();
-
-    Optional<emitc::ApplyOp> elementTypePtrOp =
-        createVmTypeDefPtr(rewriter, allocOp.getOperation(), elementType);
-
-    if (!elementTypePtrOp.has_value()) {
-      return allocOp.emitError() << "generating iree_vm_type_def_t* failed";
-    }
-
-    Value list = emitc_builders::allocateVariable(
+    Value container = emitc_builders::allocateVariable(
         rewriter, loc,
-        emitc::PointerType::get(emitc::OpaqueType::get(ctx, "iree_vm_list_t")),
+        emitc::PointerType::get(
+            emitc::OpaqueType::get(ctx, cNames.value().type)),
         {"NULL"});
 
-    Value listPtr = emitc_builders::addressOf(rewriter, loc, list);
+    Value containerPtr = emitc_builders::addressOf(rewriter, loc, container);
 
-    auto funcOp = allocOp.getOperation()->getParentOfType<mlir::func::FuncOp>();
+    auto funcOp =
+        op.getOperation()->template getParentOfType<mlir::func::FuncOp>();
     IREE::VM::EmitCTypeConverter *typeConverter =
-        getTypeConverter<IREE::VM::EmitCTypeConverter>();
+        this->template getTypeConverter<IREE::VM::EmitCTypeConverter>();
+
+    const BlockArgument stateArg =
+        funcOp.getArgument(CCONV_ARGUMENT_MODULE_STATE);
+
+    Optional<SmallVector<Value>> operands =
+        getOperands(op, adaptor, rewriter, elementType.value(), containerPtr);
+
+    if (!operands.has_value()) {
+      return op.emitError() << "failed to build operands";
+    }
+
+    returnIfError(
+        /*rewriter=*/rewriter,
+        /*location=*/loc,
+        /*callee=*/StringAttr::get(ctx, cNames.value().constructor),
+        /*args=*/ArrayAttr{},
+        /*operands=*/ArrayRef<Value>{operands.value()},
+        /*typeConverter=*/*typeConverter);
+
+    auto ref = typeConverter->materializeRef(op.getResult());
+
+    if (!ref.has_value()) {
+      return op.emitError() << "local ref not found";
+    }
+
+    Value refType =
+        rewriter
+            .create<emitc::CallOp>(
+                /*location=*/loc,
+                /*type=*/emitc::OpaqueType::get(ctx, "iree_vm_ref_type_t"),
+                /*callee=*/StringAttr::get(ctx, cNames.value().typeId),
+                /*args=*/ArrayAttr{},
+                /*templateArgs=*/ArrayAttr{},
+                /*operands=*/ArrayRef<Value>{})
+            .getResult(0);
+
+    returnIfError(
+        /*rewriter=*/rewriter,
+        /*location=*/loc,
+        /*callee=*/StringAttr::get(ctx, "iree_vm_ref_wrap_assign"),
+        /*args=*/ArrayAttr{},
+        /*operands=*/ArrayRef<Value>{container, refType, ref.value()},
+        /*typeConverter=*/*typeConverter);
+
+    rewriter.replaceOp(op, ref.value());
+
+    return success();
+  }
+
+  Optional<Type> extractElementType(MLIRContext *ctx, Type t) const {
+    if (auto listType = t.dyn_cast<IREE::VM::ListType>()) {
+      return listType.getElementType();
+    } else if (auto bufferType = t.dyn_cast<IREE::VM::BufferType>()) {
+      return NoneType::get(ctx);
+    }
+    return std::nullopt;
+  }
+
+  Optional<CNames> extractCNames(SrcOpTy op) const {
+    if (isa<IREE::VM::ListAllocOp>(op)) {
+      return CNames{"iree_vm_list_t", "iree_vm_list_type_id",
+                    "iree_vm_list_create"};
+    } else if (isa<IREE::VM::BufferAllocOp>(op)) {
+      return CNames{"iree_vm_buffer_t", "iree_vm_buffer_type_id",
+                    "iree_vm_buffer_create"};
+    } else if (isa<IREE::VM::BufferCloneOp>(op)) {
+      return CNames{"iree_vm_buffer_t", "iree_vm_buffer_type_id",
+                    "iree_vm_buffer_clone"};
+    }
+    return std::nullopt;
+  }
+
+  Optional<SmallVector<Value, 4>> getOperands(
+      SrcOpTy op, Adaptor adaptor, ConversionPatternRewriter &rewriter,
+      Type elementType, Value containerPtr) const {
+    auto ctx = op.getContext();
+    auto loc = op.getLoc();
+
+    SmallVector<Value, 4> result;
+
+    if (isa<IREE::VM::ListAllocOp>(op)) {
+      Optional<emitc::ApplyOp> elementTypePtrOp =
+          createVmTypeDefPtr(rewriter, op.getOperation(), elementType);
+
+      if (!elementTypePtrOp.has_value()) {
+        return std::nullopt;
+      }
+
+      Value capacity = adaptor.getOperands()[0];
+
+      result.push_back(elementTypePtrOp.value().getResult());
+      result.push_back(capacity);
+    } else if (isa<IREE::VM::BufferAllocOp>(op)) {
+      Value access =
+          rewriter
+              .create<emitc::ConstantOp>(
+                  /*location=*/loc,
+                  /*resultType=*/
+                  emitc::OpaqueType::get(ctx, "iree_vm_buffer_access_t"),
+                  /*value=*/
+                  emitc::OpaqueAttr::get(ctx,
+                                         "IREE_VM_BUFFER_ACCESS_MUTABLE | "
+                                         "IREE_VM_BUFFER_ACCESS_ORIGIN_GUEST"))
+              .getResult();
+      Value length = adaptor.getOperands()[0];
+
+      result.push_back(access);
+      result.push_back(length);
+    } else if (isa<IREE::VM::BufferCloneOp>(op)) {
+      Value access =
+          rewriter
+              .create<emitc::ConstantOp>(
+                  /*location=*/loc,
+                  /*resultType=*/
+                  emitc::OpaqueType::get(ctx, "iree_vm_buffer_access_t"),
+                  /*value=*/
+                  emitc::OpaqueAttr::get(ctx,
+                                         "IREE_VM_BUFFER_ACCESS_MUTABLE | "
+                                         "IREE_VM_BUFFER_ACCESS_ORIGIN_GUEST"))
+              .getResult();
+
+      Value refPtr = adaptor.getOperands()[0];
+      Value refValue = emitc_builders::contentsOf(rewriter, loc, refPtr);
+
+      IREE::VM::EmitCTypeConverter *typeConverter =
+          this->template getTypeConverter<IREE::VM::EmitCTypeConverter>();
+
+      Value source =
+          failContainerNull(
+              /*rewriter=*/rewriter,
+              /*location=*/loc,
+              /*type=*/
+              emitc::PointerType::get(
+                  emitc::OpaqueType::get(ctx, "iree_vm_buffer_t")),
+              /*callee=*/StringAttr::get(ctx, "iree_vm_buffer_deref"),
+              /*args=*/ArrayAttr{},
+              /*operands=*/ArrayRef<Value>{refValue},
+              /*typeConverter=*/*typeConverter)
+              .getResult(0);
+
+      Value offset = adaptor.getOperands()[1];
+      Value length = adaptor.getOperands()[2];
+
+      result.push_back(access);
+      result.push_back(source);
+      result.push_back(offset);
+      result.push_back(length);
+    } else {
+      return std::nullopt;
+    }
+
+    auto funcOp =
+        op.getOperation()->template getParentOfType<mlir::func::FuncOp>();
 
     const BlockArgument stateArg =
         funcOp.getArgument(CCONV_ARGUMENT_MODULE_STATE);
@@ -3608,42 +4317,10 @@ class ListAllocOpConversion
         /*memberName=*/"allocator",
         /*operand=*/stateArg);
 
-    returnIfError(
-        /*rewriter=*/rewriter,
-        /*location=*/loc,
-        /*callee=*/StringAttr::get(ctx, "iree_vm_list_create"),
-        /*args=*/ArrayAttr{},
-        /*operands=*/
-        ArrayRef<Value>{elementTypePtrOp.value().getResult(),
-                        adaptor.getOperands()[0], allocatorOp, listPtr},
-        /*typeConverter=*/*typeConverter);
+    result.push_back(allocatorOp);
+    result.push_back(containerPtr);
 
-    auto ref = typeConverter->materializeRef(allocOp.getResult());
-
-    if (!ref.has_value()) {
-      return allocOp.emitError() << "local ref not found";
-    }
-
-    auto refTypeOp = rewriter.create<emitc::CallOp>(
-        /*location=*/loc,
-        /*type=*/emitc::OpaqueType::get(ctx, "iree_vm_ref_type_t"),
-        /*callee=*/StringAttr::get(ctx, "iree_vm_list_type_id"),
-        /*args=*/ArrayAttr{},
-        /*templateArgs=*/ArrayAttr{},
-        /*operands=*/ArrayRef<Value>{});
-
-    returnIfError(
-        /*rewriter=*/rewriter,
-        /*location=*/loc,
-        /*callee=*/StringAttr::get(ctx, "iree_vm_ref_wrap_assign"),
-        /*args=*/ArrayAttr{},
-        /*operands=*/
-        ArrayRef<Value>{list, refTypeOp.getResult(0), ref.value()},
-        /*typeConverter=*/*typeConverter);
-
-    rewriter.replaceOp(allocOp, ref.value());
-
-    return success();
+    return result;
   }
 };
 
@@ -3692,7 +4369,7 @@ class ListGetOpConversion : public OpConversionPattern<GetOpTy> {
     IREE::VM::EmitCTypeConverter *typeConverter =
         this->template getTypeConverter<IREE::VM::EmitCTypeConverter>();
 
-    auto listDerefOp = failListNull(
+    auto listDerefOp = failContainerNull(
         /*rewriter=*/rewriter,
         /*location=*/loc,
         /*type=*/
@@ -3743,7 +4420,7 @@ class ListGetRefOpConversion
     IREE::VM::EmitCTypeConverter *typeConverter =
         getTypeConverter<IREE::VM::EmitCTypeConverter>();
 
-    auto listDerefOp = failListNull(
+    auto listDerefOp = failContainerNull(
         /*rewriter=*/rewriter,
         /*location=*/loc,
         /*type=*/
@@ -3895,7 +4572,7 @@ class ListSetOpConversion : public OpConversionPattern<SetOpTy> {
     IREE::VM::EmitCTypeConverter *typeConverter =
         this->template getTypeConverter<IREE::VM::EmitCTypeConverter>();
 
-    auto listDerefOp = failListNull(
+    auto listDerefOp = failContainerNull(
         /*rewriter=*/rewriter,
         /*location=*/loc,
         /*type=*/
@@ -3937,7 +4614,7 @@ class ListSetRefOpConversion
     IREE::VM::EmitCTypeConverter *typeConverter =
         this->template getTypeConverter<IREE::VM::EmitCTypeConverter>();
 
-    auto listDerefOp = failListNull(
+    auto listDerefOp = failContainerNull(
         /*rewriter=*/rewriter,
         /*location=*/loc,
         /*type=*/
@@ -4027,19 +4704,71 @@ void populateVMToEmitCPatterns(ConversionTarget &conversionTarget,
   patterns.add<ConstRefRodataOpConversion>(typeConverter, context);
 
   // List ops
-  patterns.add<ListAllocOpConversion>(typeConverter, context);
-  patterns.add<ListOpConversion<IREE::VM::ListReserveOp>>(
-      typeConverter, context, "iree_vm_list_reserve", 0, true);
-  patterns.add<ListOpConversion<IREE::VM::ListResizeOp>>(
-      typeConverter, context, "iree_vm_list_resize", 0, true);
-  patterns.add<ListOpConversion<IREE::VM::ListSizeOp>>(
-      typeConverter, context, "iree_vm_list_size", 0, false);
+  patterns.add<ContainerAllocOpConversion<IREE::VM::ListAllocOp>>(typeConverter,
+                                                                  context);
+  patterns.add<ContainerOpConversion<IREE::VM::ListReserveOp>>(
+      typeConverter, context, "iree_vm_list_reserve", DenseSet<size_t>({0}),
+      true);
+  patterns.add<ContainerOpConversion<IREE::VM::ListResizeOp>>(
+      typeConverter, context, "iree_vm_list_resize", DenseSet<size_t>({0}),
+      true);
+  patterns.add<ContainerOpConversion<IREE::VM::ListSizeOp>>(
+      typeConverter, context, "iree_vm_list_size", DenseSet<size_t>({0}),
+      false);
   patterns.add<ListGetOpConversion<IREE::VM::ListGetI32Op>>(typeConverter,
                                                             context);
   patterns.add<ListGetRefOpConversion>(typeConverter, context);
   patterns.add<ListSetOpConversion<IREE::VM::ListSetI32Op>>(typeConverter,
                                                             context);
   patterns.add<ListSetRefOpConversion>(typeConverter, context);
+
+  // Buffer ops
+  patterns.add<ContainerAllocOpConversion<IREE::VM::BufferAllocOp>>(
+      typeConverter, context);
+  patterns.add<ContainerAllocOpConversion<IREE::VM::BufferCloneOp>>(
+      typeConverter, context);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferLengthOp>>(
+      typeConverter, context, "iree_vm_buffer_length", DenseSet<size_t>({0}),
+      false);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferCompareOp>>(
+      typeConverter, context, "iree_vm_buffer_compare_bytes",
+      DenseSet<size_t>({0, 2}), true);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferCopyOp>>(
+      typeConverter, context, "iree_vm_buffer_copy_bytes",
+      DenseSet<size_t>({0, 2}), true);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferFillI8Op>>(
+      typeConverter, context, "iree_vm_buffer_fill_elements",
+      DenseSet<size_t>({0}), true);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferFillI16Op>>(
+      typeConverter, context, "iree_vm_buffer_fill_elements",
+      DenseSet<size_t>({0}), true);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferFillI32Op>>(
+      typeConverter, context, "iree_vm_buffer_fill_elements",
+      DenseSet<size_t>({0}), true);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferLoadI8SOp>>(
+      typeConverter, context, "iree_vm_buffer_read_elements",
+      DenseSet<size_t>({0}), true);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferLoadI8UOp>>(
+      typeConverter, context, "iree_vm_buffer_read_elements",
+      DenseSet<size_t>({0}), true);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferStoreI8Op>>(
+      typeConverter, context, "iree_vm_buffer_write_elements",
+      DenseSet<size_t>({0}), true);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferLoadI16SOp>>(
+      typeConverter, context, "iree_vm_buffer_read_elements",
+      DenseSet<size_t>({0}), true);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferLoadI16UOp>>(
+      typeConverter, context, "iree_vm_buffer_read_elements",
+      DenseSet<size_t>({0}), true);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferStoreI16Op>>(
+      typeConverter, context, "iree_vm_buffer_write_elements",
+      DenseSet<size_t>({0}), true);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferLoadI32Op>>(
+      typeConverter, context, "iree_vm_buffer_read_elements",
+      DenseSet<size_t>({0}), true);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferStoreI32Op>>(
+      typeConverter, context, "iree_vm_buffer_write_elements",
+      DenseSet<size_t>({0}), true);
 
   // Conditional assignment ops
   patterns.add<GenericOpConversion<IREE::VM::SelectI32Op>>(
@@ -4126,6 +4855,17 @@ void populateVMToEmitCPatterns(ConversionTarget &conversionTarget,
   patterns.add<ConstOpConversion<IREE::VM::ConstF32Op>>(typeConverter, context);
   patterns.add<ConstZeroOpConversion<IREE::VM::ConstF32ZeroOp>>(typeConverter,
                                                                 context);
+
+  // ExtF32: Buffer ops
+  patterns.add<ContainerOpConversion<IREE::VM::BufferFillF32Op>>(
+      typeConverter, context, "iree_vm_buffer_fill_elements",
+      DenseSet<size_t>({0}), true);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferLoadF32Op>>(
+      typeConverter, context, "iree_vm_buffer_fill_elements",
+      DenseSet<size_t>({0}), true);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferStoreF32Op>>(
+      typeConverter, context, "iree_vm_buffer_write_elements",
+      DenseSet<size_t>({0}), true);
 
   // ExtF32: Conditional assignment
   patterns.add<GenericOpConversion<IREE::VM::SelectF32Op>>(
@@ -4241,9 +4981,21 @@ void populateVMToEmitCPatterns(ConversionTarget &conversionTarget,
   patterns.add<ListSetOpConversion<IREE::VM::ListSetI64Op>>(typeConverter,
                                                             context);
 
+  // ExtI64: Buffer ops
+  patterns.add<ContainerOpConversion<IREE::VM::BufferFillI64Op>>(
+      typeConverter, context, "iree_vm_buffer_fill_elements",
+      DenseSet<size_t>({0}), true);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferLoadI64Op>>(
+      typeConverter, context, "iree_vm_buffer_read_elements",
+      DenseSet<size_t>({0}), true);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferStoreI64Op>>(
+      typeConverter, context, "iree_vm_buffer_write_elements",
+      DenseSet<size_t>({0}), true);
+
   // ExtI64: Conditional assignment ops
   patterns.add<GenericOpConversion<IREE::VM::SelectI64Op>>(
       typeConverter, context, "vm_select_i64");
+
   // ExtI64: Native integer arithmetic ops
   patterns.add<GenericOpConversion<IREE::VM::AddI64Op>>(typeConverter, context,
                                                         "vm_add_i64");
@@ -4301,6 +5053,18 @@ void populateVMToEmitCPatterns(ConversionTarget &conversionTarget,
       typeConverter, context, "vm_cmp_lt_i64u");
   patterns.add<GenericOpConversion<IREE::VM::CmpNZI64Op>>(
       typeConverter, context, "vm_cmp_nz_i64");
+
+  // ExtF64:
+  // ExtF64: Buffer ops
+  patterns.add<ContainerOpConversion<IREE::VM::BufferFillF64Op>>(
+      typeConverter, context, "iree_vm_buffer_fill_elements",
+      DenseSet<size_t>({0}), true);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferLoadF64Op>>(
+      typeConverter, context, "iree_vm_buffer_read_elements",
+      DenseSet<size_t>({0}), true);
+  patterns.add<ContainerOpConversion<IREE::VM::BufferStoreF64Op>>(
+      typeConverter, context, "iree_vm_buffer_write_elements",
+      DenseSet<size_t>({0}), true);
 }
 
 namespace IREE {
