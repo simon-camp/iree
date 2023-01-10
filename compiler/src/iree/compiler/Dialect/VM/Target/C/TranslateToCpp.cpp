@@ -9,6 +9,7 @@
 
 #include "iree/compiler/Dialect/VM/Target/C/CppEmitter.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -61,6 +62,29 @@ static LogicalResult printConstantOp(CppEmitter &emitter, Operation *operation,
   if (failed(emitter.emitAssignPrefix(*operation)))
     return failure();
   return emitter.emitAttribute(operation->getLoc(), value);
+}
+
+static LogicalResult printOperation(CppEmitter &emitter,
+                                    arith::ConstantOp constantOp) {
+  Operation *operation = constantOp.getOperation();
+  Attribute value = constantOp.getValue();
+
+  return printConstantOp(emitter, operation, value);
+}
+
+static LogicalResult printOperation(CppEmitter &emitter,
+                                    arith::SelectOp selectOp) {
+  raw_ostream &os = emitter.ostream();
+  Operation &op = *selectOp.getOperation();
+  
+  if (failed(emitter.emitAssignPrefix(op)))
+      return failure();
+  
+  os << emitter.getOrCreateName(selectOp.getCondition()) << " ? "
+     << emitter.getOrCreateName(selectOp.getTrueValue()) << " : " 
+     << emitter.getOrCreateName(selectOp.getFalseValue()) << ";\n";
+
+  return success();
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
@@ -761,16 +785,23 @@ LogicalResult CppEmitter::emitLabel(Block &block) {
 LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
   LogicalResult status =
       llvm::TypeSwitch<Operation *, LogicalResult>(&op)
+          // Builtin ops.
+          .Case<ModuleOp>([&](auto op) { return printOperation(*this, op); })
+          // CF ops.
+          .Case<cf::BranchOp, cf::CondBranchOp>(
+              [&](auto op) { return printOperation(*this, op); })
           // EmitC ops.
           .Case<emitc::ApplyOp, emitc::CallOp, emitc::CastOp, emitc::ConstantOp,
                 emitc::IncludeOp, emitc::VariableOp>(
               [&](auto op) { return printOperation(*this, op); })
+          // Func ops.
+          .Case<func::CallOp, func::ConstantOp, func::FuncOp, func::ReturnOp>(
+              [&](auto op) { return printOperation(*this, op); })
           // SCF ops.
           .Case<scf::ForOp, scf::IfOp, scf::YieldOp>(
               [&](auto op) { return printOperation(*this, op); })
-          // Standard ops.
-          .Case<cf::BranchOp, mlir::func::CallOp, cf::CondBranchOp, mlir::func::ConstantOp,
-                func::FuncOp, ModuleOp, func::ReturnOp>(
+          // Arithmetic ops.
+          .Case<arith::ConstantOp, arith::SelectOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Default([&](Operation *) {
             return op.emitOpError("unable to find printer for op");

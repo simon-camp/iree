@@ -391,14 +391,11 @@ LogicalResult retainOrMoveRefs(OpBuilder &builder, Location location,
       return failure();
     }
 
-    StringRef callee = isMove ? "iree_vm_ref_move" : "iree_vm_ref_retain";
-    builder.create<emitc::CallOp>(
-        /*location=*/location,
-        /*type=*/TypeRange{},
-        /*callee=*/StringAttr::get(ctx, callee),
-        /*args=*/ArrayAttr{},
-        /*templateArgs=*/ArrayAttr{},
-        /*operands=*/ArrayRef<Value>{srcRef, tmpPtr});
+    if (isMove) {
+      emitc_builders::ireeVmRefMove(builder, location, srcRef, tmpPtr);
+    } else {
+      emitc_builders::ireeVmRefRetain(builder, location, srcRef, tmpPtr);
+    }
 
     tmpMapping.map(srcRef, tmpPtr);
   }
@@ -406,15 +403,11 @@ LogicalResult retainOrMoveRefs(OpBuilder &builder, Location location,
   for (const auto &[srcRef, destRef] : mapping.getValueMap()) {
     Value tmpRef = tmpMapping.lookup(srcRef);
 
-    StringRef callee = isMove ? "iree_vm_ref_move" : "iree_vm_ref_assign";
-
-    builder.create<emitc::CallOp>(
-        /*location=*/location,
-        /*type=*/TypeRange{},
-        /*callee=*/StringAttr::get(ctx, callee),
-        /*args=*/ArrayAttr{},
-        /*templateArgs=*/ArrayAttr{},
-        /*operands=*/ArrayRef<Value>{tmpRef, destRef});
+    if (isMove) {
+      emitc_builders::ireeVmRefMove(builder, location, tmpRef, destRef);
+    } else {
+      emitc_builders::ireeVmRefAssign(builder, location, tmpRef, destRef);
+    }
   }
 
   return success();
@@ -2118,13 +2111,7 @@ class ImportOpConverter {
                                /*operand=*/uint8Ptr)
                            .getResult();
 
-        builder.create<emitc::CallOp>(
-            /*location=*/loc,
-            /*type=*/TypeRange{},
-            /*callee=*/StringAttr::get(ctx, "iree_vm_ref_assign"),
-            /*args=*/ArrayAttr{},
-            /*templateArgs=*/ArrayAttr{},
-            /*operands=*/ArrayRef<Value>{arg, refPtr});
+        emitc_builders::ireeVmRefAssign(builder, loc, arg, refPtr);
       } else {
         assert(!argType.isa<emitc::PointerType>());
         Value size =
@@ -2189,13 +2176,7 @@ class ImportOpConverter {
                                /*operand=*/uint8Ptr)
                            .getResult();
 
-        builder.create<emitc::CallOp>(
-            /*location=*/loc,
-            /*type=*/TypeRange{},
-            /*callee=*/StringAttr::get(ctx, "iree_vm_ref_move"),
-            /*args=*/ArrayAttr{},
-            /*templateArgs=*/ArrayAttr{},
-            /*operands=*/ArrayRef<Value>{refPtr, arg});
+        emitc_builders::ireeVmRefMove(builder, loc, refPtr, arg);
       } else {
         Type valueType = argType.cast<emitc::PointerType>().getPointee();
         Value size =
@@ -2557,14 +2538,7 @@ class CallOpConversion : public OpConversionPattern<CallOpTy> {
       return failure();
     }
 
-    builder.create<emitc::CallOp>(
-        /*location=*/loc,
-        /*type=*/TypeRange{},
-        /*callee=*/StringAttr::get(ctx, "iree_vm_ref_assign"),
-        /*args=*/ArrayAttr{},
-        /*templateArgs=*/ArrayAttr{},
-        /*operands=*/
-        ArrayRef<Value>{operandRef.value(), refPtr});
+    emitc_builders::ireeVmRefAssign(builder, loc, operandRef.value(), refPtr);
 
     return refPtr;
   }
@@ -2827,6 +2801,103 @@ class ConstRefRodataOpConversion
         /*typeConverter=*/*typeConverter);
 
     rewriter.replaceOp(constRefRodataOp, ref.value());
+
+    return success();
+  }
+};
+
+class SelectRefOpConversion
+    : public OpConversionPattern<IREE::VM::SelectRefOp> {
+  using Adaptor = IREE::VM::SelectRefOp::Adaptor;
+  using OpConversionPattern<IREE::VM::SelectRefOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      IREE::VM::SelectRefOp selectOp, Adaptor adaptor,
+      ConversionPatternRewriter &rewriter) const override {
+    auto loc = selectOp.getLoc();
+
+    auto funcOp =
+        selectOp.getOperation()->getParentOfType<mlir::func::FuncOp>();
+
+    IREE::VM::EmitCTypeConverter *typeConverter =
+        getTypeConverter<IREE::VM::EmitCTypeConverter>();
+
+    auto vmAnalysis = typeConverter->lookupAnalysis(funcOp);
+    if (failed(vmAnalysis)) {
+      return selectOp.emitError() << "parent func op not found in cache.";
+    }
+
+    auto refDest = typeConverter->materializeRef(selectOp.getResult());
+
+    if (!refDest.has_value()) {
+      return selectOp.emitError() << "local ref not found";
+    }
+
+    bool moveTrue = vmAnalysis.value().get().isMove(selectOp.getTrueValue(),
+                                                    selectOp.getOperation());
+    bool moveFalse = vmAnalysis.value().get().isMove(selectOp.getFalseValue(),
+                                                     selectOp.getOperation());
+    Optional<Value> refTrue =
+        typeConverter->materializeRef(selectOp.getTrueValue());
+    Optional<Value> refFalse =
+        typeConverter->materializeRef(selectOp.getFalseValue());
+
+    if (!refTrue.has_value() || !refFalse.has_value()) {
+      return selectOp.emitError() << "local ref not found";
+    }
+
+    Block *block = rewriter.getInsertionBlock();
+    Block::iterator opPosition = rewriter.getInsertionPoint();
+    Block *continuationBlock = block->splitBlock(opPosition);
+
+    // Create a new block for the target of the failure.
+    Block *trueBlock;
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      Region *parentRegion = block->getParent();
+      trueBlock = rewriter.createBlock(parentRegion, parentRegion->end());
+
+      if (moveTrue) {
+        emitc_builders::ireeVmRefMove(rewriter, loc, refTrue.value(),
+                                      refDest.value());
+      } else {
+        emitc_builders::ireeVmRefRetain(rewriter, loc, refTrue.value(),
+                                        refDest.value());
+      }
+
+      if (moveFalse && refFalse.value() != refDest.value()) {
+        emitc_builders::ireeVmRefRelease(rewriter, loc, refFalse.value());
+      }
+
+      rewriter.create<IREE::VM::BranchOp>(loc, continuationBlock);
+    }
+
+    Block *falseBlock;
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      Region *parentRegion = block->getParent();
+      falseBlock = rewriter.createBlock(parentRegion, parentRegion->end());
+
+      if (moveFalse) {
+        emitc_builders::ireeVmRefMove(rewriter, loc, refFalse.value(),
+                                      refDest.value());
+      } else {
+        emitc_builders::ireeVmRefRetain(rewriter, loc, refFalse.value(),
+                                        refDest.value());
+      }
+
+      if (moveTrue && refTrue.value() != refDest.value()) {
+        emitc_builders::ireeVmRefRelease(rewriter, loc, refTrue.value());
+      }
+
+      rewriter.create<IREE::VM::BranchOp>(loc, continuationBlock);
+    }
+
+    rewriter.setInsertionPointToEnd(block);
+    rewriter.create<IREE::VM::CondBranchOp>(loc, selectOp.getCondition(),
+                                            trueBlock, falseBlock);
+
+    rewriter.replaceOp(selectOp, refDest.value());
 
     return success();
   }
@@ -4773,6 +4844,7 @@ void populateVMToEmitCPatterns(ConversionTarget &conversionTarget,
   // Conditional assignment ops
   patterns.add<GenericOpConversion<IREE::VM::SelectI32Op>>(
       typeConverter, context, "vm_select_i32");
+  patterns.add<SelectRefOpConversion>(typeConverter, context);
 
   // Native integer arithmetic ops
   patterns.add<GenericOpConversion<IREE::VM::AddI32Op>>(typeConverter, context,

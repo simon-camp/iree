@@ -109,6 +109,12 @@ void structPtrMemberAssign(OpBuilder builder, Location location,
 Value ireeOkStatus(OpBuilder builder, Location location);
 
 void ireeVmRefRelease(OpBuilder builder, Location location, Value operand);
+void ireeVmRefMove(OpBuilder builder, Location location, Value operand,
+                   Value out_operand);
+void ireeVmRefRetain(OpBuilder builder, Location location, Value operand,
+                     Value out_operand);
+void ireeVmRefAssign(OpBuilder builder, Location location, Value operand,
+                     Value out_operand);
 
 }  // namespace emitc_builders
 }  // namespace iree_compiler

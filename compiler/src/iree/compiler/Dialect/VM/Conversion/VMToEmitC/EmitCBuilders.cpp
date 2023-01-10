@@ -347,6 +347,42 @@ void ireeVmRefRelease(OpBuilder builder, Location location, Value operand) {
       /*operands=*/ArrayRef<Value>{operand});
 }
 
+void ireeVmRefMove(OpBuilder builder, Location location, Value operand,
+                   Value out_operand) {
+  auto ctx = builder.getContext();
+  builder.create<emitc::CallOp>(
+      /*location=*/location,
+      /*type=*/TypeRange{},
+      /*callee=*/StringAttr::get(ctx, "iree_vm_ref_move"),
+      /*args=*/ArrayAttr{},
+      /*templateArgs=*/ArrayAttr{},
+      /*operands=*/ArrayRef<Value>{operand, out_operand});
+}
+
+void ireeVmRefRetain(OpBuilder builder, Location location, Value operand,
+                     Value out_operand) {
+  auto ctx = builder.getContext();
+  builder.create<emitc::CallOp>(
+      /*location=*/location,
+      /*type=*/TypeRange{},
+      /*callee=*/StringAttr::get(ctx, "iree_vm_ref_retain"),
+      /*args=*/ArrayAttr{},
+      /*templateArgs=*/ArrayAttr{},
+      /*operands=*/ArrayRef<Value>{operand, out_operand});
+}
+
+void ireeVmRefAssign(OpBuilder builder, Location location, Value operand,
+                     Value out_operand) {
+  auto ctx = builder.getContext();
+  builder.create<emitc::CallOp>(
+      /*location=*/location,
+      /*type=*/TypeRange{},
+      /*callee=*/StringAttr::get(ctx, "iree_vm_ref_assign"),
+      /*args=*/ArrayAttr{},
+      /*templateArgs=*/ArrayAttr{},
+      /*operands=*/ArrayRef<Value>{operand, out_operand});
+}
+
 }  // namespace emitc_builders
 }  // namespace iree_compiler
 }  // namespace mlir

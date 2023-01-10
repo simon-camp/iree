@@ -112,8 +112,8 @@ vm.module @control_flow_ops {
   // TODO(simon-camp): The EmitC conversion replaces vm.cond_br with cf.cond_br
   // operations. If both successor blocks are the same, these get canonicalized
   // to arith.select operations followed by an unconditional branch.
-  vm.export @test_cond_br_same_successor attributes {emitc.exclude}
-  vm.func private @test_cond_br_same_successor() {
+  vm.export @test_cond_br_same_successor
+  vm.func @test_cond_br_same_successor() {
     %c1 = vm.const.i32 1
     %c1dno = util.optimization_barrier %c1 : i32
     %c2 = vm.const.i32 2
