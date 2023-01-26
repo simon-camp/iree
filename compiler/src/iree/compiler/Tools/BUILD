@@ -4,72 +4,72 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
-load("//build_tools/bazel:build_defs.oss.bzl", "iree_compiler_cc_library")
+load("@bazel_skylib//rules:common_settings.bzl" , "bool_flag")
+load("//build_tools/bazel:build_defs.oss.bzl" , "iree_compiler_cc_library")
 
 package(
     default_visibility = ["//visibility:public"],
     features = ["layering_check"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"], # Apache 2.0
 )
 
 bool_flag(
-    name = "IREE_EMBEDDED_RELEASE_INFO",
+    name = "IREE_EMBEDDED_RELEASE_INFO" ,
     build_setting_default = False,
 )
 
 config_setting(
-    name = "embedding_enabled",
+    name = "embedding_enabled" ,
     flag_values = {
-        ":IREE_EMBEDDED_RELEASE_INFO": "True",
+    ":IREE_EMBEDDED_RELEASE_INFO" : "True" ,
     },
 )
 
 cc_library(
-    name = "init_input_passes_and_dialects",
+    name = "init_input_passes_and_dialects" ,
     srcs = [
-        "init_input_dialects.cc",
-        "init_input_passes.cc",
+    "init_input_dialects.cc" ,
+    "init_input_passes.cc" ,
     ],
     hdrs = [
-        "init_input_dialects.h",
-        "init_input_passes.h",
+    "init_input_dialects.h" ,
+    "init_input_passes.h" ,
     ],
     deps = [
-        "//compiler/src/iree/compiler/InputConversion/Common",
-        "//compiler/src/iree/compiler/InputConversion/MHLO",
-        "//compiler/src/iree/compiler/InputConversion/TMTensor",
-        "//compiler/src/iree/compiler/InputConversion/TOSA",
-        "@llvm-project//mlir:ConversionPasses",
-        "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:TosaDialect",
-        "@mlir-hlo//:lhlo",
-        "@mlir-hlo//:mlir_hlo",
-        "@mlir-hlo//stablehlo:chlo_ops",
-        "@mlir-hlo//stablehlo:stablehlo_ops",
-        "@torch-mlir-dialects//:TorchMLIRTMTensorDialect",
+    "//compiler/src/iree/compiler/InputConversion/Common" ,
+    "//compiler/src/iree/compiler/InputConversion/MHLO" ,
+    "//compiler/src/iree/compiler/InputConversion/TMTensor" ,
+    "//compiler/src/iree/compiler/InputConversion/TOSA" ,
+    "@llvm-project//mlir:ConversionPasses" ,
+    "@llvm-project//mlir:IR" ,
+    "@llvm-project//mlir:TosaDialect" ,
+    "@mlir-hlo//:lhlo" ,
+    "@mlir-hlo//:mlir_hlo" ,
+    "@mlir-hlo//stablehlo:chlo_ops" ,
+    "@mlir-hlo//stablehlo:stablehlo_ops" ,
+    "@torch-mlir-dialects//:TorchMLIRTMTensorDialect" ,
     ],
 )
 
 iree_compiler_cc_library(
-    name = "init_iree",
+    name = "init_iree" ,
     srcs = [
-        "init_iree.cc",
+    "init_iree.cc" ,
     ],
     hdrs = [
-        "init_iree.h",
+    "init_iree.h" ,
     ],
     deps = [
-        ":version",
-        "@llvm-project//llvm:Support",
+    ":version" ,
+    "@llvm-project//llvm:Support" ,
     ],
 )
 
 cc_library(
-    name = "init_iree_passes_and_dialects",
+    name = "init_iree_passes_and_dialects" ,
     hdrs = [
-        "init_iree_dialects.h",
-        "init_iree_passes.h",
+    "init_iree_dialects.h" ,
+    "init_iree_passes.h" ,
     ],
     deps = [
         "//compiler/src/iree/compiler/Bindings/Native/Transforms",
@@ -79,6 +79,7 @@ cc_library(
         "//compiler/src/iree/compiler/ConstEval",
         "//compiler/src/iree/compiler/Dialect/Flow/IR",
         "//compiler/src/iree/compiler/Dialect/Flow/Transforms",
+        "//compiler/src/iree/compiler/Dialect/IREEC/IR:IREECDialect",
         "//compiler/src/iree/compiler/Dialect/HAL/IR:HALDialect",
         "//compiler/src/iree/compiler/Dialect/HAL/Transforms",
         "//compiler/src/iree/compiler/Dialect/Stream/IR",
@@ -88,6 +89,7 @@ cc_library(
         "//compiler/src/iree/compiler/Dialect/Util/Transforms",
         "//compiler/src/iree/compiler/Dialect/VM/Analysis",
         "//compiler/src/iree/compiler/Dialect/VM/Conversion/VMToEmitC",
+        "//compiler/src/iree/compiler/Dialect/VM/Conversion/VMToIREEC",
         "//compiler/src/iree/compiler/Dialect/VM/IR",
         "//compiler/src/iree/compiler/Dialect/VM/Transforms",
         "//compiler/src/iree/compiler/Dialect/VMVX/IR:VMVXDialect",
@@ -109,10 +111,10 @@ cc_library(
 )
 
 cc_library(
-    name = "init_mlir_passes_and_dialects",
+    name = "init_mlir_passes_and_dialects" ,
     hdrs = [
-        "init_mlir_dialects.h",
-        "init_mlir_passes.h",
+    "init_mlir_dialects.h" ,
+    "init_mlir_passes.h" ,
     ],
     deps = [
         "//compiler/src/iree/compiler/Dialect/VM/Target:init_targets",
@@ -152,97 +154,97 @@ cc_library(
 )
 
 cc_library(
-    name = "init_passes_and_dialects",
+    name = "init_passes_and_dialects" ,
     hdrs = [
-        "init_dialects.h",
-        "init_passes.h",
+    "init_dialects.h" ,
+    "init_passes.h" ,
     ],
     deps = [
-        ":init_compiler_modules",
-        ":init_input_passes_and_dialects",
-        ":init_iree_passes_and_dialects",
-        ":init_mlir_passes_and_dialects",
-        "//compiler/src/iree/compiler/Codegen",
-        "//compiler/src/iree/compiler/Dialect/HAL/Conversion:Passes",
+    ":init_compiler_modules" ,
+    ":init_input_passes_and_dialects" ,
+    ":init_iree_passes_and_dialects" ,
+    ":init_mlir_passes_and_dialects" ,
+    "//compiler/src/iree/compiler/Codegen" ,
+    "//compiler/src/iree/compiler/Dialect/HAL/Conversion:Passes" ,
     ],
 )
 
 cc_library(
-    name = "init_compiler_modules",
+    name = "init_compiler_modules" ,
     hdrs = ["init_compiler_modules.h"],
     deps = [
-        "//compiler/src/iree/compiler/Modules/Check/IR:CheckDialect",
+    "//compiler/src/iree/compiler/Modules/Check/IR:CheckDialect" ,
     ],
 )
 
 config_setting(
-    name = "cuda_enabled",
+    name = "cuda_enabled" ,
     flag_values = {
-        "@iree_cuda//:enabled": "True",
+    "@iree_cuda//:enabled" : "True" ,
     },
 )
 
 cc_library(
-    name = "init_targets",
+    name = "init_targets" ,
     srcs = ["init_targets.cc"],
     hdrs = ["init_targets.h"],
     local_defines = [
-        "IREE_HAVE_LLVM_CPU_TARGET",
-        "IREE_HAVE_METALSPIRV_TARGET",
-        "IREE_HAVE_ROCM_TARGET",
-        "IREE_HAVE_VMVX_TARGET",
-        "IREE_HAVE_VULKANSPIRV_TARGET",
+    "IREE_HAVE_LLVM_CPU_TARGET" ,
+    "IREE_HAVE_METALSPIRV_TARGET" ,
+    "IREE_HAVE_ROCM_TARGET" ,
+    "IREE_HAVE_VMVX_TARGET" ,
+    "IREE_HAVE_VULKANSPIRV_TARGET" ,
     ] + select({
-        ":cuda_enabled": ["IREE_HAVE_CUDA_TARGET"],
-        "//conditions:default": [],
-    }),
+    ":cuda_enabled" : ["IREE_HAVE_CUDA_TARGET"],
+    "//conditions:default" : [],
+    }) ,
     deps = [
-        "//compiler/src/iree/compiler/Dialect/HAL/Target/LLVM",
-        "//compiler/src/iree/compiler/Dialect/HAL/Target/MetalSPIRV",
-        "//compiler/src/iree/compiler/Dialect/HAL/Target/ROCM",
-        "//compiler/src/iree/compiler/Dialect/HAL/Target/VMVX",
-        "//compiler/src/iree/compiler/Dialect/HAL/Target/VulkanSPIRV",
+    "//compiler/src/iree/compiler/Dialect/HAL/Target/LLVM" ,
+    "//compiler/src/iree/compiler/Dialect/HAL/Target/MetalSPIRV" ,
+    "//compiler/src/iree/compiler/Dialect/HAL/Target/ROCM" ,
+    "//compiler/src/iree/compiler/Dialect/HAL/Target/VMVX" ,
+    "//compiler/src/iree/compiler/Dialect/HAL/Target/VulkanSPIRV" ,
     ] + select({
-        ":cuda_enabled": ["//compiler/src/iree/compiler/Dialect/HAL/Target/CUDA"],
-        "//conditions:default": [],
-    }),
+    ":cuda_enabled" : ["//compiler/src/iree/compiler/Dialect/HAL/Target/CUDA"],
+    "//conditions:default" : [],
+    }) ,
 )
 
 cc_library(
-    name = "init_llvmir_translations",
+    name = "init_llvmir_translations" ,
     hdrs = [
-        "init_llvmir_translations.h",
+    "init_llvmir_translations.h" ,
     ],
     deps = [
-        "@llvm-project//mlir:ArmNeonToLLVMIRTranslation",
-        "@llvm-project//mlir:ToLLVMIRTranslation",
+    "@llvm-project//mlir:ArmNeonToLLVMIRTranslation" ,
+    "@llvm-project//mlir:ToLLVMIRTranslation" ,
     ],
 )
 
 cc_library(
-    name = "iree_compile_lib",
+    name = "iree_compile_lib" ,
     srcs = [
-        "iree_compile_lib.cc",
+    "iree_compile_lib.cc" ,
     ],
     hdrs = ["iree_compile_lib.h"],
     deps = [
-        ":init_iree",
-        "//compiler/src/iree/compiler/API2:Headers",
-        "//compiler/src/iree/compiler/API2/Internal:Embed",
-        "//compiler/src/iree/compiler/Pipelines",
-        "@llvm-project//llvm:Support",
+    ":init_iree" ,
+    "//compiler/src/iree/compiler/API2:Headers" ,
+    "//compiler/src/iree/compiler/API2/Internal:Embed" ,
+    "//compiler/src/iree/compiler/Pipelines" ,
+    "@llvm-project//llvm:Support" ,
     ],
 )
 
 iree_compiler_cc_library(
-    name = "version",
+    name = "version" ,
     srcs = ["version.cc"],
     hdrs = ["version.h"],
     local_defines = select({
-        ":embedding_enabled": [
-            "IREE_RELEASE_REVISION=\\\"$(IREE_RELEASE_REVISION)\\\"",
-            "IREE_RELEASE_VERSION=\\\"$(IREE_RELEASE_VERSION)\\\"",
-        ],
-        "//conditions:default": [],
-    }),
+    ":embedding_enabled" : [
+    "IREE_RELEASE_REVISION=\\\"$(IREE_RELEASE_REVISION)\\\"" ,
+    "IREE_RELEASE_VERSION=\\\"$(IREE_RELEASE_VERSION)\\\"" ,
+    ],
+    "//conditions:default" : [],
+    }) ,
 )

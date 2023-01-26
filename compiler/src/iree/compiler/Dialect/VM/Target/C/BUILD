@@ -51,6 +51,7 @@ iree_compiler_cc_library(
         "//compiler/src/iree/compiler/Dialect/Util/Transforms",
         "//compiler/src/iree/compiler/Dialect/VM/Analysis",
         "//compiler/src/iree/compiler/Dialect/VM/Conversion/VMToEmitC",
+        "//compiler/src/iree/compiler/Dialect/VM/Conversion/VMToIREEC",
         "//compiler/src/iree/compiler/Dialect/VM/IR",
         "//compiler/src/iree/compiler/Dialect/VM/Transforms",
         "@llvm-project//llvm:Support",

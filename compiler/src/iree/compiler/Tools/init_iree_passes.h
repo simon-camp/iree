@@ -33,6 +33,7 @@
 #ifdef IREE_HAVE_C_OUTPUT_FORMAT
 // TODO: Remove these once rolled up into explicit registration.
 #include "iree/compiler/Dialect/VM/Conversion/VMToEmitC/ConvertVMToEmitC.h"
+#include "iree/compiler/Dialect/VM/Conversion/VMToIREEC/ConvertVMToIREEC.h"
 #endif  // IREE_HAVE_C_OUTPUT_FORMAT
 
 namespace mlir {
@@ -67,6 +68,7 @@ inline void registerAllIreePasses() {
   // TODO: Eliminate these.
 #ifdef IREE_HAVE_C_OUTPUT_FORMAT
   IREE::VM::createConvertVMToEmitCPass();
+  IREE::VM::createConvertVMToIREECPass();
 #endif  // IREE_HAVE_C_OUTPUT_FORMAT
 }
 
