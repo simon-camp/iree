@@ -162,7 +162,7 @@ def IREEC_PointerWriteOp : IREEC_Op<"ptr.write",
                            [MemWrite]>:$ptr);
 
   let assemblyFormat = [{
-    operands attr-dict `:` type($ptr)
+    operands attr-dict `:` qualified(type($ptr))
   }];
 }
 

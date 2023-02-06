@@ -153,7 +153,6 @@ iree_cc_library(
   "init_mlir_dialects.h"
   "init_mlir_passes.h"
   DEPS
-  <<<<<<< HEAD
   MLIRAffineDialect
   MLIRAffineTransforms
   MLIRArmNeonDialect
@@ -182,7 +181,6 @@ iree_cc_library(
   MLIRTransforms
   MLIRVectorDialect
   iree::compiler::Dialect::VM::Target::init_targets
-  =======
   MLIRAffineDialect
   MLIRAffineTransforms
   MLIRArmNeonDialect
@@ -210,7 +208,6 @@ iree_cc_library(
   MLIRTransforms
   MLIRVectorDialect
   iree::compiler::Dialect::VM::Target::init_targets
-  >>>>>>> [WIP] Initialize dialect
   PUBLIC
 )
 

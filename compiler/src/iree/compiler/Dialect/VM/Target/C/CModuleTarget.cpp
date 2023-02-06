@@ -12,6 +12,7 @@
 #include "iree/compiler/Dialect/VM/Analysis/RegisterAllocation.h"
 #include "iree/compiler/Dialect/VM/Conversion/VMToEmitC/ConvertVMToEmitC.h"
 #include "iree/compiler/Dialect/VM/Conversion/VMToEmitC/DropExcludedExports.h"
+#include "iree/compiler/Dialect/VM/Conversion/VMToIREEC/ConvertVMToIREEC.h"
 #include "iree/compiler/Dialect/VM/Target/C/CppEmitter.h"
 #include "iree/compiler/Dialect/VM/Transforms/Passes.h"
 #include "llvm/ADT/TypeSwitch.h"

@@ -7,6 +7,7 @@
 #include "iree/compiler/Dialect/VM/Conversion/VMToIREEC/ConvertVMToIREEC.h"
 
 #include "iree/compiler/Dialect/IREEC/IR/IREEC.h"
+#include "iree/compiler/Dialect/Util/IR/UtilOps.h"
 #include "iree/compiler/Dialect/VM/Conversion/VMToIREEC/IREECTypeConverter.h"
 
 namespace mlir {
@@ -46,39 +47,81 @@ class FuncOpConversion : public OpConversionPattern<IREE::VM::FuncOp> {
 
     TypeConverter::SignatureConversion signatureConverter(
         funcOp.getFunctionType().getNumInputs());
+
+    signatureConverter.addInputs({
+        IREE::IREEC::StackType::get(ctx),
+        IREE::IREEC::ModuleType::get(ctx),
+        IREE::IREEC::ModuleStateType::get(ctx),
+    });
+
+    IREE::IREEC::IREECTypeConverter *typeConverter =
+        getTypeConverter<IREE::IREEC::IREECTypeConverter>();
+
     for (const auto &arg : llvm::enumerate(funcOp.getArguments())) {
-      Type convertedType =
-          getTypeConverter()->convertType(arg.value().getType());
+      Type convertedType = typeConverter->convertType(arg.value().getType());
       signatureConverter.addInputs(arg.index(), convertedType);
     }
 
-    rewriter.applySignatureConversion(&funcOp.getFunctionBody(),
-                                      signatureConverter);
-
     SmallVector<Type> resultTypes;
-    if (failed(getTypeConverter()->convertTypes(
+    resultTypes.push_back(IREE::IREEC::StatusType::get(ctx));
+    if (failed(typeConverter->convertTypes(
             funcOp.getFunctionType().getResults(), resultTypes))) {
       return funcOp.emitError() << "signature conversion failed";
     }
-    resultTypes.push_back(IREE::IREEC::StatusType::get(ctx));
 
-    FunctionType functionType = rewriter.getFunctionType(
-        signatureConverter.getConvertedTypes(), resultTypes);
-    auto ireecFuncOp = rewriter.create<IREE::IREEC::FuncOp>(
-        loc, functionType, ArrayAttr{}, ArrayAttr{});
+    // if (!resultTypes.empty()) {
+    //   signatureConverter.addInputs(resultTypes);
+    // }
+
+    FunctionType functionType = FunctionType::get(
+        ctx, signatureConverter.getConvertedTypes(), resultTypes);
+
+    auto ireecFuncOp = rewriter.replaceOpWithNewOp<IREE::IREEC::FuncOp>(
+        funcOp, functionType, ArrayAttr{}, ArrayAttr{});
     ireecFuncOp.setVisibility(funcOp.getVisibility());
     ireecFuncOp.setName(funcOp.getName());
 
     rewriter.inlineRegionBefore(funcOp.getRegion(), ireecFuncOp.getRegion(),
                                 ireecFuncOp.getRegion().begin());
 
-    IREE::IREEC::IREECTypeConverter *typeConverter =
-        getTypeConverter<IREE::IREEC::IREECTypeConverter>();
     if (failed(typeConverter->moveFunctionAnalysis(funcOp, ireecFuncOp))) {
       return funcOp.emitError() << "failed to move analysis to new key";
     }
 
-    rewriter.eraseOp(funcOp);
+    // for (auto &block : llvm::drop_begin(ireecFuncOp.getBlocks())) {
+    //   for (auto arg : block.getArguments()) {
+    //     arg.dump();
+    //     if (!typeConverter->isLegal(arg.getType())) {
+    //       Type type = IREE::IREEC::RefType::get(ctx);
+    //       Value ref = typeConverter->materializeTargetConversion(rewriter,
+    //       loc,
+    //                                                              type, arg);
+    //       rewriter.replaceUsesOfBlockArgument(arg, ref);
+    //     }
+    //   }
+    // }
+
+    // TypeConverter blockArgConverter = typeConverter->blockArgConverter();
+    // (void)rewriter.convertRegionTypes(&ireecFuncOp.getFunctionBody(),
+    //                                   blockArgConverter,
+    //                                   &signatureConverter);
+    rewriter.applySignatureConversion(&ireecFuncOp.getFunctionBody(),
+                                      signatureConverter, typeConverter);
+
+    // Materialize a ref value according to the RegisterAllocation
+    for (auto &op : ireecFuncOp.getOps()) {
+      rewriter.setInsertionPoint(&op);
+      for (auto [operandIndex, operand] : llvm::enumerate(op.getOperands())) {
+        if (operand.getType().isa<IREE::VM::RefType>()) {
+          Type type = IREE::IREEC::RefType::get(ctx);
+          Value ireecRef = typeConverter->materializeTargetConversion(
+              rewriter, loc, type, operand);
+          Value vmRef = typeConverter->materializeSourceConversion(
+              rewriter, loc, operand.getType(), ireecRef);
+          op.setOperand(operandIndex, vmRef);
+        }
+      }
+    }
     return success();
   }
 };
@@ -98,8 +141,8 @@ class ReturnOpConversion : public OpConversionPattern<IREE::VM::ReturnOp> {
         rewriter.create<IREE::IREEC::StatusOkOp>(loc, statusType).getResult();
 
     SmallVector<Value> operands;
-    operands.append(adaptor.getOperands().begin(), adaptor.getOperands().end());
     operands.push_back(statusOk);
+    operands.append(adaptor.getOperands().begin(), adaptor.getOperands().end());
 
     rewriter.replaceOpWithNewOp<IREE::IREEC::ReturnOp>(returnOp, operands);
 
@@ -171,11 +214,12 @@ class ConvertVMToIREECPass
 
     target.addLegalDialect<IREE::IREEC::IREECDialect>();
     target.addLegalDialect<IREE::VM::VMDialect>();
+    target.addLegalOp<IREE::Util::OptimizationBarrierOp>();
+    target.addLegalOp<UnrealizedConversionCastOp>();
     // target.addIllegalOp<IREE::VM::ModuleOp>();
     target.addIllegalOp<IREE::VM::FuncOp>();
     target.addIllegalOp<IREE::VM::ReturnOp>();
-    target.addIllegalOp<IREE::VM::ConstRefZeroOp>();
-    target.addIllegalOp<UnrealizedConversionCastOp>();
+    // target.addIllegalOp<IREE::VM::ConstRefZeroOp>();
 
     for (auto funcOp : module.getOps<IREE::VM::FuncOp>()) {
       typeConverter.cacheFunctionAnalysis(funcOp);

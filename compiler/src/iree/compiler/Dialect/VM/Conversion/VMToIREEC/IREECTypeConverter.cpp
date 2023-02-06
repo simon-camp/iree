@@ -37,15 +37,33 @@ IREECTypeConverter::IREECTypeConverter() {
     assert(inputs.size() == 1);
     assert(inputs[0].getType().isa<IREE::IREEC::RefType>());
 
-    Type objectType = IREE::VM::OpaqueType::get(builder.getContext());
-    Type refType = IREE::VM::RefType::get(objectType);
-
-    auto op = builder.create<UnrealizedConversionCastOp>(loc, refType,
+    auto op = builder.create<UnrealizedConversionCastOp>(loc, type,
                                                          ValueRange{inputs[0]});
 
     return op.getResult(0);
   });
 }
+
+// TypeConverter IREECTypeConverter::blockArgConverter() {
+//   TypeConverter typeConverter;
+//   typeConverter.addConversion([](Type type) -> Optional<Type> { return type;
+//   }); typeConverter.addConversion(
+//       [](IREE::VM::RefType type,
+//          SmallVectorImpl<Type> &results) -> Optional<LogicalResult> {
+//         return success();
+//       });
+
+//   return typeConverter;
+// }
+
+// TypeConverter IREECTypeConverter::outParamConverter() {
+//   TypeConverter typeConverter;
+//   typeConverter.addConversion([this](Type type) -> Optional<Type> {
+//     Type convertedType = this->convertType(type);
+//     return IREE::IREEC::PointerType::get(type.getContext(), convertedType);
+//   });
+//   return typeConverter;
+// }
 
 Optional<Value> IREECTypeConverter::materializeRef(Value ref) {
   assert(ref.getType().isa<IREE::VM::RefType>());
@@ -69,9 +87,9 @@ Optional<Value> IREECTypeConverter::materializeRef(Value ref) {
   // Search block arguments
   int refArgCounter = 0;
   for (BlockArgument arg : funcOp.getArguments()) {
-    assert(!arg.getType().isa<IREE::VM::RefType>());
+    // assert(!arg.getType().isa<IREE::VM::RefType>());
 
-    if (arg.getType().isa<IREE::IREEC::RefType>()) {
+    if (arg.getType().isa<IREE::VM::RefType>()) {
       if (ordinal == refArgCounter++) {
         return arg;
       }

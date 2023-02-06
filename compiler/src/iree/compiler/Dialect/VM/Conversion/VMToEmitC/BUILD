@@ -33,7 +33,10 @@ iree_compiler_cc_library(
         "DropExcludedExports.h",
         "EmitCBuilders.h",
         "EmitCTypeConverter.h",
+        "IREECToEmitCPatterns.h",
         "VMAnalysis.h",
+        "VMToEmitCPatterns.h",
+        "VMToIREECPatterns.h",
     ],
     deps = [
         "//compiler/src/iree/compiler/Dialect/Util/Conversion",

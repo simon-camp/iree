@@ -20,6 +20,8 @@ namespace IREEC {
 class IREECTypeConverter : public mlir::TypeConverter {
  public:
   IREECTypeConverter();
+  TypeConverter blockArgConverter();
+  TypeConverter outParamConverter();
 
   void cacheFunctionAnalysis(IREE::VM::FuncOp funcOp) {
     analysisCache.insert(
@@ -34,6 +36,8 @@ class IREECTypeConverter : public mlir::TypeConverter {
     }
     analysisCache.insert(std::make_pair(
         ireecFuncOp.getOperation(), std::move(cachedAnalysis.value().get())));
+
+    analysisCache.erase(funcOp.getOperation());
     return success();
   }
 

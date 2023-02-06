@@ -22,7 +22,10 @@ iree_cc_library(
     "DropExcludedExports.h"
     "EmitCBuilders.h"
     "EmitCTypeConverter.h"
+    "IREECToEmitCPatterns.h"
     "VMAnalysis.h"
+    "VMToEmitCPatterns.h"
+    "VMToIREECPatterns.h"
   SRCS
     "ConvertVMToEmitC.cpp"
     "DropExcludedExports.cpp"
