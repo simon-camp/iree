@@ -267,9 +267,11 @@ Optional<std::string> buildVariadicFunctionName(
 }
 
 Optional<Value> createVmTypeDefPtr(ConversionPatternRewriter &rewriter,
-                                   Operation *srcOp, Type elementType) {
-  auto ctx = srcOp->getContext();
-  auto loc = srcOp->getLoc();
+                                   Location loc,
+                                   IREE::VM::EmitCTypeConverter &typeConverter,
+                                   IREE::VM::ModuleOp moduleOp,
+                                   BlockArgument moduleArg, Type elementType) {
+  auto ctx = rewriter.getContext();
 
   // Map from type to enum values of type iree_vm_value_type_t and
   // iree_vm_ref_type_t
@@ -286,8 +288,6 @@ Optional<Value> createVmTypeDefPtr(ConversionPatternRewriter &rewriter,
        {"IREE_VM_VALUE_TYPE_F32", "IREE_VM_REF_TYPE_NULL"}},
       {Float64Type::get(ctx),
        {"IREE_VM_VALUE_TYPE_F64", "IREE_VM_REF_TYPE_NULL"}},
-      {IREE::VM::OpaqueType::get(ctx),
-       {"IREE_VM_VALUE_TYPE_NONE", "IREE_VM_REF_TYPE_NULL"}},
   };
   Value elementTypeValue;
 
@@ -305,46 +305,22 @@ Optional<Value> createVmTypeDefPtr(ConversionPatternRewriter &rewriter,
                 /*templateArgs=*/ArrayAttr{},
                 /*operands=*/ArrayRef<Value>{})
             .getResult(0);
-  } else {
-    if (!elementType.isa<IREE::VM::RefType>()) {
-      return std::nullopt;
-    }
+  } else if (elementType.isa<IREE::VM::RefType>()) {
     Type objType = elementType.cast<IREE::VM::RefType>().getObjectType();
 
-    std::string typeName;
-
-    if (objType.isa<IREE::VM::ListType>()) {
-      typeName = "!vm.list";
-    } else {
-      llvm::raw_string_ostream sstream(typeName);
-      objType.print(sstream);
-      sstream.flush();
+    Type descriptorType = emitc::PointerType::get(
+        emitc::OpaqueType::get(ctx, "const iree_vm_ref_type_descriptor_t"));
+    Type descriptorArrayType = emitc::PointerType::get(descriptorType);
+    Optional<size_t> typeIndex = typeConverter.lookupType(objType);
+    if (!typeIndex.has_value()) {
+      moduleOp.emitError("type index lookup failed");
+      return std::nullopt;
     }
 
-    // Remove leading '!' and wrap in quotes
-    typeName = std::string("\"") + typeName.substr(1) + std::string("\"");
-
-    auto typeNameCStringView = rewriter.create<emitc::CallOp>(
-        /*location=*/loc,
-        /*type=*/emitc::OpaqueType::get(ctx, "iree_string_view_t"),
-        /*callee=*/StringAttr::get(ctx, "iree_make_cstring_view"),
-        /*args=*/ArrayAttr::get(ctx, {emitc::OpaqueAttr::get(ctx, typeName)}),
-        /*templateArgs=*/ArrayAttr{},
-        /*operands=*/ArrayRef<Value>{});
-
-    auto typeDescriptor =
-        rewriter
-            .create<emitc::CallOp>(
-                /*location=*/loc,
-                /*type=*/
-                emitc::PointerType::get(emitc::OpaqueType::get(
-                    ctx, "const iree_vm_ref_type_descriptor_t")),
-                /*callee=*/StringAttr::get(ctx, "iree_vm_instance_lookup_type"),
-                /*args=*/ArrayAttr{},
-                /*templateArgs=*/ArrayAttr{},
-                /*operands=*/ArrayRef<Value>{typeNameCStringView.getResult(0)})
-            .getResult(0);
-
+    Value typeArray = emitc_builders::structPtrMember(
+        rewriter, loc, descriptorArrayType, "types", moduleArg);
+    Value typeDescriptor = emitc_builders::arrayElement(
+        rewriter, loc, descriptorType, typeIndex.value(), typeArray);
     auto refType =
         rewriter
             .create<emitc::CastOp>(
@@ -362,6 +338,18 @@ Optional<Value> createVmTypeDefPtr(ConversionPatternRewriter &rewriter,
                 /*args=*/ArrayAttr{},
                 /*templateArgs=*/ArrayAttr{},
                 /*operands=*/ArrayRef<Value>{refType})
+            .getResult(0);
+  } else if (elementType.isa<IREE::VM::OpaqueType>()) {
+    elementTypeValue =
+        rewriter
+            .create<emitc::CallOp>(
+                /*location=*/loc,
+                /*type=*/emitc::OpaqueType::get(ctx, "iree_vm_type_def_t"),
+                /*callee=*/
+                StringAttr::get(ctx, "iree_vm_make_undefined_type_def"),
+                /*args=*/ArrayAttr{},
+                /*templateArgs=*/ArrayAttr{},
+                /*operands=*/ArrayRef<Value>{})
             .getResult(0);
   }
 
@@ -1112,6 +1100,40 @@ LogicalResult createAPIFunctions(IREE::VM::ModuleOp moduleOp,
                                           /*memberName=*/"allocator",
                                           /*operand=*/module,
                                           /*value=*/allocatorArg);
+    auto &typeTable = typeConverter.typeTable;
+    attachAttribute(moduleOp, "vm.num_types",
+                    builder.getI32IntegerAttr(typeTable.size()));
+    if (!typeTable.empty()) {
+      Type typeDescriptorType = emitc::PointerType::get(
+          emitc::OpaqueType::get(ctx, "const iree_vm_ref_type_descriptor_t"));
+      Type typeDescriptorArrayType =
+          emitc::PointerType::get(typeDescriptorType);
+      Value moduleTypes = emitc_builders::structPtrMember(
+          builder, loc, typeDescriptorArrayType, "types", module);
+
+      std::string listType = "!vm.list";
+      for (auto [index, typeDef] : llvm::enumerate(typeTable)) {
+        std::string typeName = typeDef.full_name;
+        typeConverter.mapType(typeDef.type, index);
+        std::string listPrefix = typeName.substr(0, listType.size());
+        if (listType == listPrefix) {
+          typeName = listPrefix;
+        }
+
+        // Remove leading '!' and wrap in quotes
+        if (typeName[0] == '!') {
+          typeName = typeName.substr(1);
+        }
+        typeName = std::string("\"") + typeName + std::string("\"");
+
+        Value stringView =
+            emitc_builders::ireeMakeCstringView(builder, loc, typeName);
+        Value refTypeDescriptor = emitc_builders::ireeVmInstanceLookupType(
+            builder, loc, instanceArg, stringView);
+        emitc_builders::arrayElementAssign(builder, loc, moduleTypes, index,
+                                           refTypeDescriptor);
+      }
+    }
 
     Value vmModule = emitc_builders::allocateVariable(
         builder, loc, emitc::OpaqueType::get(ctx, "iree_vm_module_t"));
@@ -3184,24 +3206,18 @@ class FailOpConversion : public OpConversionPattern<IREE::VM::FailOp> {
 
       releaseRefs(rewriter, loc, funcOp, *typeConverter);
 
-      std::string message = std::string("\"") +
-                            op.getMessage().value_or("").str() +
-                            std::string("\"");
+      std::string messageStr = std::string("\"") +
+                               op.getMessage().value_or("").str() +
+                               std::string("\"");
 
-      auto messageOp = rewriter.create<emitc::CallOp>(
-          /*location=*/loc,
-          /*type=*/emitc::OpaqueType::get(ctx, "iree_string_view_t"),
-          /*callee=*/StringAttr::get(ctx, "iree_make_cstring_view"),
-          /*args=*/
-          ArrayAttr::get(ctx, {emitc::OpaqueAttr::get(ctx, message)}),
-          /*templateArgs=*/ArrayAttr{},
-          /*operands=*/ArrayRef<Value>{});
+      Value message =
+          emitc_builders::ireeMakeCstringView(rewriter, loc, messageStr);
 
       auto messageSizeOp = emitc_builders::structMember(
           rewriter, loc,
           /*type=*/emitc::OpaqueType::get(ctx, "iree_host_size_t"),
           /*memberName=*/"size",
-          /*operand=*/messageOp.getResult(0));
+          /*operand=*/message);
 
       auto messageSizeIntOp = rewriter.create<emitc::CastOp>(
           /*location=*/loc,
@@ -3213,7 +3229,7 @@ class FailOpConversion : public OpConversionPattern<IREE::VM::FailOp> {
           /*type=*/
           emitc::PointerType::get(emitc::OpaqueType::get(ctx, "const char")),
           /*memberName=*/"data",
-          /*operand=*/messageOp.getResult(0));
+          /*operand=*/message);
 
       auto status = rewriter.create<emitc::CallOp>(
           /*location=*/loc,
@@ -3368,9 +3384,15 @@ class GlobalLoadStoreRefOpConversion
         /*index=*/rewriter.getUI32IntegerAttr(globalOrdinal),
         /*operand=*/refs);
 
+    auto moduleOp = op->getParentOfType<IREE::VM::ModuleOp>();
+    auto parentFuncOp = op->getParentOfType<mlir::func::FuncOp>();
+    const BlockArgument moduleArg =
+        parentFuncOp.getArgument(CCONV_ARGUMENT_MODULE);
     Type elementType = localValue.getType();
 
-    auto elementTypePtr = createVmTypeDefPtr(rewriter, op, elementType);
+    auto elementTypePtr =
+        createVmTypeDefPtr(rewriter, op->getLoc(), *typeConverter, moduleOp,
+                           moduleArg, elementType);
 
     if (!elementTypePtr.has_value()) {
       return op->emitError() << "generating iree_vm_type_def_t* failed";
@@ -3750,8 +3772,16 @@ class ContainerAllocOpConversion : public OpConversionPattern<SrcOpTy> {
                                            Value allocator) const {
     SmallVector<Value> result;
 
+    IREE::VM::EmitCTypeConverter *typeConverter =
+        this->template getTypeConverter<IREE::VM::EmitCTypeConverter>();
+    auto moduleOp = op.getOperation()->getParentOfType<IREE::VM::ModuleOp>();
+    auto parentFuncOp =
+        op.getOperation()->getParentOfType<mlir::func::FuncOp>();
+    const BlockArgument moduleArg =
+        parentFuncOp.getArgument(CCONV_ARGUMENT_MODULE);
     Optional<Value> elementTypePtr =
-        createVmTypeDefPtr(rewriter, op.getOperation(), elementType);
+        createVmTypeDefPtr(rewriter, op.getLoc(), *typeConverter, moduleOp,
+                           moduleArg, elementType);
 
     if (!elementTypePtr.has_value()) {
       return std::nullopt;
@@ -3978,10 +4008,17 @@ class ListGetRefOpConversion
                         ref.value()},
         /*typeConverter=*/*typeConverter);
 
+    auto moduleOp = getOp.getOperation()->getParentOfType<IREE::VM::ModuleOp>();
+    auto parentFuncOp =
+        getOp.getOperation()->getParentOfType<mlir::func::FuncOp>();
+    const BlockArgument moduleArg =
+        parentFuncOp.getArgument(CCONV_ARGUMENT_MODULE);
+
     Type elementType = getOp.getResult().getType();
 
     auto elementTypePtr =
-        createVmTypeDefPtr(rewriter, getOp.getOperation(), elementType);
+        createVmTypeDefPtr(rewriter, getOp.getLoc(), *typeConverter, moduleOp,
+                           moduleArg, elementType);
 
     if (!elementTypePtr.has_value()) {
       return getOp.emitError() << "generating iree_vm_type_def_t* failed";
@@ -4691,6 +4728,7 @@ class ConvertVMToEmitCPass
 
     ConversionTarget target(getContext());
     EmitCTypeConverter typeConverter;
+    typeConverter.cacheTypeTable(module);
 
     // Convert vm.func ops to std.func with the calling convention used by
     // EmitC. We convert these upfront to make sure vm.call ops always
