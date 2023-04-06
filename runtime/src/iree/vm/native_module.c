@@ -320,9 +320,16 @@ static iree_status_t iree_vm_native_module_issue_call(
   const uint16_t function_ordinal = callee_frame->function.ordinal;
   const iree_vm_native_function_ptr_t* function_ptr =
       &module->descriptor->functions[function_ordinal];
+#define HOTFIX
+#ifdef HOTFIX
+  iree_status_t status = function_ptr->shim(
+      stack, flags, args_storage, rets_storage, function_ptr->target,
+      module->user_interface.self, module_state);
+#else
   iree_status_t status =
       function_ptr->shim(stack, flags, args_storage, rets_storage,
                          function_ptr->target, module, module_state);
+#endif
   if (iree_status_is_deferred(status)) {
     // Call deferred; bail and return to the scheduler.
     // Note that we preserve the stack.
