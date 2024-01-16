@@ -25,6 +25,7 @@ public:
   Type convertTypeAsNonPointer(Type type) const;
   Type convertTypeAsPointer(Type type) const;
   emitc::OpaqueType convertTypeAsCType(Type type) const;
+  std::optional<std::string> convertTypeToStringLiteral(Type type) const;
 
   SetVector<Operation *> sourceMaterializations;
   mutable ModuleAnalysis analysis;
