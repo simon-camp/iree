@@ -7,6 +7,8 @@
 #ifndef IREE_COMPILER_DIALECT_VM_CONVERSION_VMTOEMITC_VMANALYSIS_H_
 #define IREE_COMPILER_DIALECT_VM_CONVERSION_VMTOEMITC_VMANALYSIS_H_
 
+#include <optional>
+
 #include "iree/compiler/Dialect/VM/Analysis/RegisterAllocation.h"
 #include "iree/compiler/Dialect/VM/Analysis/ValueLiveness.h"
 #include "iree/compiler/Dialect/VM/IR/VMTypes.h"
@@ -35,9 +37,10 @@ public:
     originalFunctionType = functionType;
     callingConvention = cconv.str();
   }
-  FuncAnalysis(FuncAnalysis &analysis) {
+  FuncAnalysis(FuncAnalysis &analysis, StringRef exportName_) {
     originalFunctionType = analysis.getFunctionType();
     callingConvention = analysis.getCallingConvention().str();
+    exportName = exportName_.str();
   }
 
   FuncAnalysis(FuncAnalysis &&) = default;
@@ -46,6 +49,10 @@ public:
   FuncAnalysis &operator=(const FuncAnalysis &) = delete;
 
   StringRef getCallingConvention() { return callingConvention; }
+
+  StringRef getExportName() { return exportName.value(); }
+
+  bool isExported() { return exportName.has_value(); }
 
   FunctionType getFunctionType() { return originalFunctionType; }
 
@@ -91,6 +98,7 @@ private:
   DenseMap<int64_t, Operation *> refs;
   FunctionType originalFunctionType;
   std::string callingConvention;
+  std::optional<std::string> exportName;
 };
 
 struct ModuleAnalysis {
@@ -116,7 +124,8 @@ struct ModuleAnalysis {
             .lookupSymbol<mlir::func::FuncOp>(exportOp.getFunctionRefAttr());
 
     auto &funcAnalysis = lookupFunction(funcOp);
-    functions[func.getOperation()] = FuncAnalysis(funcAnalysis);
+    functions[func.getOperation()] =
+        FuncAnalysis(funcAnalysis, exportOp.getExportName());
   }
 
   void addFromImport(mlir::func::FuncOp func, IREE::VM::ImportOp import) {
