@@ -22,6 +22,7 @@ namespace mlir::iree_compiler::IREE::VM {
 struct FuncAnalysis {
 public:
   FuncAnalysis() = default;
+  FuncAnalysis(bool emitAtEnd) : emitAtEnd(emitAtEnd) {}
   FuncAnalysis(IREE::VM::FuncOp funcOp) {
     Operation *op = funcOp.getOperation();
     registerAllocation = RegisterAllocation(op);
@@ -53,6 +54,8 @@ public:
   StringRef getExportName() { return exportName.value(); }
 
   bool isExported() { return exportName.has_value(); }
+
+  bool shouldEmitAtEnd() { return emitAtEnd; }
 
   FunctionType getFunctionType() { return originalFunctionType; }
 
@@ -99,6 +102,7 @@ private:
   FunctionType originalFunctionType;
   std::string callingConvention;
   std::optional<std::string> exportName;
+  bool emitAtEnd;
 };
 
 struct ModuleAnalysis {
@@ -114,8 +118,8 @@ struct ModuleAnalysis {
   ModuleAnalysis(const ModuleAnalysis &) = delete;
   ModuleAnalysis &operator=(const ModuleAnalysis &) = delete;
 
-  void addDummy(mlir::func::FuncOp func) {
-    functions[func.getOperation()] = FuncAnalysis();
+  void addDummy(mlir::func::FuncOp func, bool emitAtEnd) {
+    functions[func.getOperation()] = FuncAnalysis(emitAtEnd);
   }
 
   void addFromExport(mlir::func::FuncOp func, IREE::VM::ExportOp exportOp) {
