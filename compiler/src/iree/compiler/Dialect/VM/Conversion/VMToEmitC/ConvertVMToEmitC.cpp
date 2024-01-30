@@ -426,7 +426,7 @@ emitc::CallOpaqueOp failableCall(
   }
 
   builder.setInsertionPointToEnd(condBlock);
-  builder.create<IREE::VM::CondBranchOp>(
+  builder.create<mlir::cf::CondBranchOp>(
       location, conditionI1.getResult(),
       negateCondition ? failureBlock : continuationBlock,
       negateCondition ? continuationBlock : failureBlock);
@@ -524,7 +524,7 @@ mlir::func::CallOp failableCall(
   }
 
   builder.setInsertionPointToEnd(condBlock);
-  builder.create<IREE::VM::CondBranchOp>(
+  builder.create<mlir::cf::CondBranchOp>(
       location, conditionI1.getResult(),
       negateCondition ? failureBlock : continuationBlock,
       negateCondition ? continuationBlock : failureBlock);
@@ -1038,7 +1038,6 @@ LogicalResult createAPIFunctions(IREE::VM::ModuleOp moduleOp,
       std::string listType = "!vm.list";
       for (auto [index, typeDef] : llvm::enumerate(typeTable)) {
         std::string typeName = typeDef.full_name;
-        moduleAnalysis.mapType(typeDef.type, index);
         std::string listPrefix = typeName.substr(0, listType.size());
         if (listType == listPrefix) {
           typeName = listPrefix;
@@ -1112,7 +1111,7 @@ LogicalResult createAPIFunctions(IREE::VM::ModuleOp moduleOp,
 
     builder.setInsertionPointToEnd(condBlock);
 
-    builder.create<IREE::VM::CondBranchOp>(loc, vmInitializeIsOk.getResult(0),
+    builder.create<mlir::cf::CondBranchOp>(loc, vmInitializeIsOk.getResult(0),
                                            continuationBlock, failureBlock);
 
     builder.setInsertionPointToStart(continuationBlock);
@@ -1159,6 +1158,10 @@ LogicalResult createAPIFunctions(IREE::VM::ModuleOp moduleOp,
 LogicalResult
 createModuleStructure(IREE::VM::ModuleOp moduleOp,
                       IREE::VM::EmitCTypeConverter &typeConverter) {
+  if (failed(createAPIFunctions(moduleOp, typeConverter.analysis))) {
+    return failure();
+  }
+
   auto loc = moduleOp.getLoc();
 
   OpBuilder builder(moduleOp);
@@ -4689,10 +4692,10 @@ public:
       funcOp.erase();
     }
 
-    // Generate func ops that implement the C API.
-    if (failed(createAPIFunctions(module, typeConverter.analysis))) {
-      return signalPassFailure();
-    }
+    // // Generate func ops that implement the C API.
+    // if (failed(createAPIFunctions(module, typeConverter.analysis))) {
+    //   return signalPassFailure();
+    // }
 
     SmallVector<std::string> importShims;
 
