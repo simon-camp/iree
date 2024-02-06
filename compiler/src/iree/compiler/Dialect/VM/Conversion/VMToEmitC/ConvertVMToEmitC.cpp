@@ -1184,7 +1184,7 @@ createModuleStructure(IREE::VM::ModuleOp moduleOp,
 
     emitc_builders::preprocessorDirective(builder, loc, emitc_builders::IFDEF,
                                           "__cplusplus");
-    builder.create<emitc::VerbatimOp>(loc, "extern \"C\" {", false);
+    builder.create<emitc::VerbatimOp>(loc, "extern \"C\" {");
     emitc_builders::preprocessorDirective(builder, loc, emitc_builders::ENDIF,
                                           "//  __cplusplus");
 
@@ -1200,7 +1200,7 @@ createModuleStructure(IREE::VM::ModuleOp moduleOp,
 
     emitc_builders::preprocessorDirective(builder, loc, emitc_builders::IFDEF,
                                           "__cplusplus");
-    builder.create<emitc::VerbatimOp>(loc, "}  // extern \"C\" {", false);
+    builder.create<emitc::VerbatimOp>(loc, "}  // extern \"C\" {");
     emitc_builders::preprocessorDirective(builder, loc, emitc_builders::ENDIF,
                                           "//  __cplusplus");
     emitc_builders::preprocessorDirective(builder, loc, emitc_builders::ENDIF,
@@ -1246,8 +1246,8 @@ createModuleStructure(IREE::VM::ModuleOp moduleOp,
         stmt += std::to_string(
             static_cast<unsigned int>(static_cast<unsigned char>(value)));
       }
-      stmt += "}";
-      builder.create<emitc::VerbatimOp>(loc, stmt, true);
+      stmt += "};";
+      builder.create<emitc::VerbatimOp>(loc, stmt);
       opsToRemove.push_back(rodataOp.getOperation());
     }
 
@@ -1264,10 +1264,8 @@ createModuleStructure(IREE::VM::ModuleOp moduleOp,
         {"iree_allocator_t", "allocator"},
         {"iree_vm_ref_type_t", "types", countOrEmpty(numTypes)}};
 
-    auto structOp = emitc_builders::struct_def(builder, loc, moduleStructName,
-                                               moduleStructFields);
-    if (failed(structOp))
-      return failure();
+    emitc_builders::structDefinition(builder, loc, moduleStructName,
+                                     moduleStructFields);
 
     auto ordinalCounts = moduleOp.getOrdinalCountsAttr();
 
@@ -1282,10 +1280,8 @@ createModuleStructure(IREE::VM::ModuleOp moduleOp,
          countOrEmpty(ordinalCounts.getImportFuncs())},
     };
 
-    auto structStateOp = emitc_builders::struct_def(
-        builder, loc, moduleStructStateName, moduleStructStateFields);
-    if (failed(structStateOp))
-      return failure();
+    emitc_builders::structDefinition(builder, loc, moduleStructStateName,
+                                     moduleStructStateFields);
 
     // Emit declarations for private functions.
     for (auto funcOp : moduleOp.getOps<mlir::func::FuncOp>()) {
@@ -1327,8 +1323,8 @@ createModuleStructure(IREE::VM::ModuleOp moduleOp,
                 "},";
       }
     }
-    deps += "}";
-    builder.create<emitc::VerbatimOp>(loc, deps, true);
+    deps += "};";
+    builder.create<emitc::VerbatimOp>(loc, deps);
 
     // imports
     SmallVector<IREE::VM::ImportOp> importOps(
@@ -1354,8 +1350,8 @@ createModuleStructure(IREE::VM::ModuleOp moduleOp,
             ", " + printStringView(importOp.getName()) + "},";
       }
     }
-    imports += "}";
-    builder.create<emitc::VerbatimOp>(loc, imports, true);
+    imports += "};";
+    builder.create<emitc::VerbatimOp>(loc, imports);
 
     for (auto op : moduleOp.getOps<IREE::VM::ImportOp>()) {
       opsToRemove.push_back(op);
@@ -1394,8 +1390,8 @@ createModuleStructure(IREE::VM::ModuleOp moduleOp,
                    printStringView(callingConvention) + ", 0, NULL},";
       }
     }
-    exports += "}";
-    builder.create<emitc::VerbatimOp>(loc, exports, true);
+    exports += "};";
+    builder.create<emitc::VerbatimOp>(loc, exports);
 
     // functions
     std::string functionName = moduleOp.getName().str() + "_funcs_";
@@ -1417,8 +1413,8 @@ createModuleStructure(IREE::VM::ModuleOp moduleOp,
                      "},";
       }
     }
-    functions += "}";
-    builder.create<emitc::VerbatimOp>(loc, functions, true);
+    functions += "};";
+    builder.create<emitc::VerbatimOp>(loc, functions);
 
     // module descriptor
     // TODO(simon-camp): support module-level reflection attributes
@@ -1449,7 +1445,7 @@ createModuleStructure(IREE::VM::ModuleOp moduleOp,
         + std::to_string(exportedFunctions.size()) + "," + functionName + "," +
         "};";
 
-    builder.create<emitc::VerbatimOp>(loc, descriptor, true);
+    builder.create<emitc::VerbatimOp>(loc, descriptor);
 
     // move functions marked with vm.emit_at_end to the end of the module
     auto funcs =
@@ -1882,7 +1878,8 @@ class ExportOpConversion : public EmitCConversionPattern<IREE::VM::ExportOp> {
           /*operand=*/newFuncOp.getArgument(SHIM_ARGUMENT_ARGS_STORAGE));
 
       // cast
-      std::string argumentsType = argumentStruct.name.value();
+      std::string argumentsType =
+          std::string("struct ") + argumentStruct.name.value();
       auto arguments = rewriter.create<emitc::CastOp>(
           /*location=*/loc,
           /*type=*/
@@ -1904,7 +1901,8 @@ class ExportOpConversion : public EmitCConversionPattern<IREE::VM::ExportOp> {
           /*operand=*/newFuncOp.getArgument(SHIM_ARGUMENT_RETS_STORAGE));
 
       // cast
-      std::string resultType = resultStruct.name.value();
+      std::string resultType =
+          std::string("struct ") + resultStruct.name.value();
       auto results = rewriter.create<emitc::CastOp>(
           /*location=*/loc,
           /*type=*/
