@@ -23,6 +23,42 @@
 
 namespace mlir::iree_compiler::emitc_builders {
 
+namespace types {
+
+template <typename T>
+struct TypeWrapper {
+  TypeWrapper(T type) : type(type) {}
+
+  TypeWrapper<emitc::PointerType> ptr() {
+    return TypeWrapper<emitc::PointerType>(emitc::PointerType::get(type));
+  }
+
+  T get() const { return type; }
+  // operator T() const { return get(); }
+
+private:
+  T type;
+};
+
+TypeWrapper<emitc::OpaqueType> allocator(MLIRContext *ctx);
+TypeWrapper<emitc::OpaqueType> buffer(MLIRContext *ctx);
+TypeWrapper<emitc::OpaqueType> buffer_access(MLIRContext *ctx);
+TypeWrapper<emitc::OpaqueType> byte_span(MLIRContext *ctx);
+TypeWrapper<emitc::OpaqueType> function(MLIRContext *ctx);
+TypeWrapper<emitc::OpaqueType> host_size(MLIRContext *ctx);
+TypeWrapper<emitc::OpaqueType> list(MLIRContext *ctx);
+TypeWrapper<emitc::OpaqueType> module(MLIRContext *ctx);
+TypeWrapper<emitc::OpaqueType> module_state(MLIRContext *ctx);
+TypeWrapper<emitc::OpaqueType> opaque(MLIRContext *ctx, StringRef value);
+TypeWrapper<emitc::OpaqueType> ref(MLIRContext *ctx);
+TypeWrapper<emitc::OpaqueType> ref_type(MLIRContext *ctx);
+TypeWrapper<emitc::OpaqueType> stack(MLIRContext *ctx);
+TypeWrapper<emitc::OpaqueType> status(MLIRContext *ctx);
+TypeWrapper<emitc::OpaqueType> type_def(MLIRContext *ctx);
+TypeWrapper<emitc::OpaqueType> value(MLIRContext *ctx);
+TypeWrapper<emitc::OpaqueType> void_(MLIRContext *ctx);
+} // namespace types
+
 struct StructField {
   std::string type;
   std::string name;

@@ -10,6 +10,60 @@
 
 namespace mlir::iree_compiler::emitc_builders {
 
+namespace types {
+TypeWrapper<emitc::OpaqueType> allocator(MLIRContext *ctx) {
+  return opaque(ctx, "iree_allocator_t");
+}
+TypeWrapper<emitc::OpaqueType> buffer(MLIRContext *ctx) {
+  return opaque(ctx, "iree_vm_buffer_t");
+}
+TypeWrapper<emitc::OpaqueType> buffer_access(MLIRContext *ctx) {
+  return opaque(ctx, "iree_vm_buffer_access_t");
+}
+TypeWrapper<emitc::OpaqueType> byte_span(MLIRContext *ctx) {
+  return opaque(ctx, "iree_byte_span_t");
+}
+TypeWrapper<emitc::OpaqueType> function(MLIRContext *ctx) {
+  return opaque(ctx, "iree_vm_function_t");
+}
+TypeWrapper<emitc::OpaqueType> host_size(MLIRContext *ctx) {
+  return opaque(ctx, "iree_host_size_t");
+}
+TypeWrapper<emitc::OpaqueType> list(MLIRContext *ctx) {
+  return opaque(ctx, "iree_vm_list_t");
+}
+TypeWrapper<emitc::OpaqueType> module(MLIRContext *ctx) {
+  return opaque(ctx, "iree_vm_module_t");
+}
+TypeWrapper<emitc::OpaqueType> module_state(MLIRContext *ctx) {
+  return opaque(ctx, "iree_vm_module_state_t");
+}
+TypeWrapper<emitc::OpaqueType> opaque(MLIRContext *ctx, StringRef value) {
+  return TypeWrapper<emitc::OpaqueType>(emitc::OpaqueType::get(ctx, value));
+}
+TypeWrapper<emitc::OpaqueType> ref(MLIRContext *ctx) {
+  return opaque(ctx, "iree_vm_ref_t");
+}
+TypeWrapper<emitc::OpaqueType> ref_type(MLIRContext *ctx) {
+  return opaque(ctx, "iree_vm_ref_type_t");
+}
+TypeWrapper<emitc::OpaqueType> stack(MLIRContext *ctx) {
+  return opaque(ctx, "iree_vm_stack_t");
+}
+TypeWrapper<emitc::OpaqueType> status(MLIRContext *ctx) {
+  return opaque(ctx, "iree_status_t");
+}
+TypeWrapper<emitc::OpaqueType> type_def(MLIRContext *ctx) {
+  return opaque(ctx, "iree_vm_type_def_t");
+}
+TypeWrapper<emitc::OpaqueType> value(MLIRContext *ctx) {
+  return opaque(ctx, "iree_vm_value_t");
+}
+TypeWrapper<emitc::OpaqueType> void_(MLIRContext *ctx) {
+  return opaque(ctx, "void");
+}
+} // namespace types
+
 namespace {
 std::string mapPreprocessorDirective(PreprocessorDirective directive) {
   switch (directive) {
