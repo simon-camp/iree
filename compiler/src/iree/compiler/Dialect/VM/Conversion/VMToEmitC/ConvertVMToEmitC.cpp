@@ -73,17 +73,11 @@ LogicalResult convertFuncOp(IREE::VM::FuncOp funcOp,
 
   FunctionType funcType = funcOp.getFunctionType();
   std::string name = moduleOp.getName().str() + "_" + funcOp.getName().str();
-  std::string moduleTypeName =
-      std::string("struct ") + moduleOp.getName().str() + "_t";
-  std::string moduleStateTypeName =
-      std::string("struct ") + moduleOp.getName().str() + "_state_t";
 
   Type stackType =
       emitc::PointerType::get(emitc::OpaqueType::get(ctx, "iree_vm_stack_t"));
-  Type moduleType =
-      emitc::PointerType::get(emitc::OpaqueType::get(ctx, moduleTypeName));
-  Type moduleStateType =
-      emitc::PointerType::get(emitc::OpaqueType::get(ctx, moduleStateTypeName));
+  Type moduleType = typeConverter.analysis.getModuleStructType(ctx);
+  Type moduleStateType = typeConverter.analysis.getModuleStateStructType(ctx);
 
   SmallVector<Type, 3> inputTypes = {stackType, moduleType, moduleStateType};
   SmallVector<Type, 1> outputTypes;
@@ -583,12 +577,9 @@ LogicalResult createAPIFunctions(IREE::VM::ModuleOp moduleOp,
 
     builder.setInsertionPointToStart(entryBlock);
 
-    std::string moduleTypeName = std::string("struct ") + moduleName + "_t";
-
     auto castedModuleOp = builder.create<emitc::CastOp>(
         /*location=*/loc,
-        /*type=*/
-        emitc::PointerType::get(emitc::OpaqueType::get(ctx, moduleTypeName)),
+        /*type=*/moduleAnalysis.getModuleStructType(ctx),
         /*operand=*/moduleArg);
 
     auto allocatorOp = emitc_builders::structPtrMember(
@@ -638,17 +629,14 @@ LogicalResult createAPIFunctions(IREE::VM::ModuleOp moduleOp,
 
     builder.setInsertionPointToStart(entryBlock);
 
-    std::string moduleStateTypeName =
-        std::string("struct ") + moduleName + "_state_t";
+    emitc::PointerType moduleStateType =
+        moduleAnalysis.getModuleStateStructType(ctx);
 
-    Value state = emitc_builders::allocateVariable(
-        builder, loc,
-        emitc::PointerType::get(
-            emitc::OpaqueType::get(ctx, moduleStateTypeName)),
-        {"NULL"});
+    Value state = emitc_builders::allocateVariable(builder, loc,
+                                                   moduleStateType, {"NULL"});
 
     Value stateSize = emitc_builders::sizeOf(
-        builder, loc, emitc::OpaqueAttr::get(ctx, moduleStateTypeName));
+        builder, loc, TypeAttr::get(moduleStateType.getPointee()));
 
     Value statePtr = emitc_builders::addressOf(builder, loc, state);
 
@@ -817,14 +805,9 @@ LogicalResult createAPIFunctions(IREE::VM::ModuleOp moduleOp,
 
     builder.setInsertionPointToStart(entryBlock);
 
-    std::string moduleStateTypeName =
-        std::string("struct ") + moduleName + "_state_t";
-
     auto stateOp = builder.create<emitc::CastOp>(
         /*location=*/loc,
-        /*type=*/
-        emitc::PointerType::get(
-            emitc::OpaqueType::get(ctx, moduleStateTypeName)),
+        /*type=*/moduleAnalysis.getModuleStateStructType(ctx),
         /*operand=*/moduleStateArg);
 
     // Release refs from state struct.
@@ -918,14 +901,9 @@ LogicalResult createAPIFunctions(IREE::VM::ModuleOp moduleOp,
 
     builder.setInsertionPointToStart(entryBlock);
 
-    std::string moduleStateTypeName =
-        std::string("struct ") + moduleName + "_state_t";
-
     auto stateOp = builder.create<emitc::CastOp>(
         /*location=*/loc,
-        /*type=*/
-        emitc::PointerType::get(
-            emitc::OpaqueType::get(ctx, moduleStateTypeName)),
+        /*type=*/moduleAnalysis.getModuleStateStructType(ctx),
         /*operand=*/moduleStateArg);
 
     auto imports = emitc_builders::structPtrMember(
@@ -998,15 +976,13 @@ LogicalResult createAPIFunctions(IREE::VM::ModuleOp moduleOp,
 
     builder.setInsertionPointToStart(entryBlock);
 
-    std::string moduleTypeName = std::string("struct ") + moduleName + "_t";
-
-    Value module = emitc_builders::allocateVariable(
-        builder, loc,
-        emitc::PointerType::get(emitc::OpaqueType::get(ctx, moduleTypeName)),
-        {"NULL"});
+    emitc::PointerType moduleStructType =
+        moduleAnalysis.getModuleStructType(ctx);
+    Value module = emitc_builders::allocateVariable(builder, loc,
+                                                    moduleStructType, {"NULL"});
 
     Value moduleSize = emitc_builders::sizeOf(
-        builder, loc, emitc::OpaqueAttr::get(ctx, moduleTypeName));
+        builder, loc, TypeAttr::get(moduleStructType.getPointee()));
 
     Value modulePtr = emitc_builders::addressOf(builder, loc, module);
 
@@ -1259,7 +1235,7 @@ createModuleStructure(IREE::VM::ModuleOp moduleOp,
 
     const int64_t numTypes = typeConverter.analysis.typeTable.size();
 
-    std::string moduleStructName = moduleOp.getName().str() + "_t";
+    std::string moduleStructName = typeConverter.analysis.getModuleStructName();
     SmallVector<emitc_builders::StructField> moduleStructFields{
         {"iree_allocator_t", "allocator"},
         {"iree_vm_ref_type_t", "types", countOrEmpty(numTypes)}};
@@ -1269,7 +1245,8 @@ createModuleStructure(IREE::VM::ModuleOp moduleOp,
 
     auto ordinalCounts = moduleOp.getOrdinalCountsAttr();
 
-    std::string moduleStructStateName = moduleOp.getName().str() + "_state_t";
+    std::string moduleStructStateName =
+        typeConverter.analysis.getModuleStateStructName();
     SmallVector<emitc_builders::StructField> moduleStructStateFields{
         {"iree_allocator_t", "allocator"},
         {"uint8_t", "rwdata", countOrEmpty(ordinalCounts.getGlobalBytes())},
@@ -1686,8 +1663,8 @@ class ExportOpConversion : public EmitCConversionPattern<IREE::VM::ExportOp> {
       std::tie(argumentStruct, resultStruct) = typedefs.value();
 
       // Cast module and module state structs.
-      auto moduleStructs =
-          castModuleAndStateStructs(rewriter, exportOp, newFuncOp);
+      auto moduleStructs = castModuleAndStateStructs(
+          rewriter, getModuleAnalysis(), exportOp, newFuncOp);
 
       if (failed(moduleStructs)) {
         return exportOp.emitError() << "module struct casting failed.";
@@ -1739,35 +1716,23 @@ class ExportOpConversion : public EmitCConversionPattern<IREE::VM::ExportOp> {
     return success();
   }
 
-  FailureOr<std::pair<Value, Value>>
-  castModuleAndStateStructs(ConversionPatternRewriter &rewriter,
-                            IREE::VM::ExportOp &exportOp,
-                            mlir::func::FuncOp &newFuncOp) const {
+  FailureOr<std::pair<Value, Value>> castModuleAndStateStructs(
+      ConversionPatternRewriter &rewriter, IREE::VM::ModuleAnalysis &analysis,
+      IREE::VM::ExportOp &exportOp, mlir::func::FuncOp &newFuncOp) const {
     auto ctx = exportOp.getContext();
     auto loc = exportOp.getLoc();
 
     auto module = newFuncOp.getArgument(SHIM_ARGUMENT_MODULE);
     auto moduleState = newFuncOp.getArgument(SHIM_ARGUMENT_MODULE_STATE);
 
-    auto moduleOp =
-        newFuncOp.getOperation()->getParentOfType<IREE::VM::ModuleOp>();
-
-    std::string moduleTypeName =
-        std::string("struct ") + moduleOp.getName().str() + "_t";
-    std::string moduleStateTypeName =
-        std::string("struct ") + moduleOp.getName().str() + "_state_t";
-
     auto moduleCasted = rewriter.create<emitc::CastOp>(
         /*location=*/loc,
-        /*type=*/
-        emitc::PointerType::get(emitc::OpaqueType::get(ctx, moduleTypeName)),
+        /*type=*/analysis.getModuleStructType(ctx),
         /*operand=*/module);
 
     auto moduleStateCasted = rewriter.create<emitc::CastOp>(
         /*location=*/loc,
-        /*type=*/
-        emitc::PointerType::get(
-            emitc::OpaqueType::get(ctx, moduleStateTypeName)),
+        /*type=*/analysis.getModuleStateStructType(ctx),
         /*operand=*/moduleState);
 
     return {{moduleCasted.getResult(), moduleStateCasted.getResult()}};

@@ -107,6 +107,7 @@ private:
 
 struct ModuleAnalysis {
   ModuleAnalysis(IREE::VM::ModuleOp module) {
+    name = module.getName();
     typeTable = buildTypeTable(module);
     for (auto [index, typeDef] : llvm::enumerate(typeTable)) {
       mapType(typeDef.type, index);
@@ -196,11 +197,26 @@ struct ModuleAnalysis {
     return applyOp.getResult();
   }
 
+  std::string getModuleStructName() { return name + "_t"; }
+
+  emitc::PointerType getModuleStructType(MLIRContext *ctx) {
+    return emitc::PointerType::get(emitc::OpaqueType::get(
+        ctx, std::string("struct ") + getModuleStructName()));
+  }
+
+  std::string getModuleStateStructName() { return name + "_state_t"; }
+
+  emitc::PointerType getModuleStateStructType(MLIRContext *ctx) {
+    return emitc::PointerType::get(emitc::OpaqueType::get(
+        ctx, std::string("struct ") + getModuleStateStructName()));
+  }
+
   std::vector<TypeDef> typeTable;
 
 private:
   DenseMap<Operation *, FuncAnalysis> functions;
   llvm::DenseMap<Type, int> typeOrdinalMap;
+  std::string name;
 };
 
 } // namespace mlir::iree_compiler::IREE::VM
