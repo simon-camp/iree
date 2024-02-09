@@ -21,13 +21,17 @@ iree_cc_library(
     "ConvertVMToEmitC.h"
     "DropExcludedExports.h"
     "EmitCBuilders.h"
+    "EmitCHelpers.h"
     "EmitCTypeConverter.h"
+    "IREEModuleStructure.h"
     "VMAnalysis.h"
   SRCS
     "ConvertVMToEmitC.cpp"
     "DropExcludedExports.cpp"
     "EmitCBuilders.cpp"
+    "EmitCHelpers.cpp"
     "EmitCTypeConverter.cpp"
+    "IREEModuleStructure.cpp"
   DEPS
     LLVMSupport
     MLIRArithDialect
