@@ -69,8 +69,9 @@ vm.module @my_module {
     // Lookup import from module struct.
     // CHECK-NEXT: %[[IMPORTS:.+]] = emitc.call_opaque "EMITC_STRUCT_PTR_MEMBER"(%arg2) {args = [0 : index, #emitc.opaque<"imports">]}
     // CHECK-SAME:     : (!emitc.ptr<!emitc.opaque<"struct my_module_state_t">>) -> !emitc.ptr<!emitc.opaque<"iree_vm_function_t">>
-    // CHECK-NEXT: %[[IMPORT:.+]] = emitc.call_opaque "EMITC_ARRAY_ELEMENT_ADDRESS"(%[[IMPORTS]]) {args = [0 : index, 0 : ui32]}
-    // CHECK-SAME:     : (!emitc.ptr<!emitc.opaque<"iree_vm_function_t">>) -> !emitc.ptr<!emitc.opaque<"iree_vm_function_t">>
+    // CHECK-NEXT: %[[IDX:.+]] = "emitc.constant"() <{value = 0 : ui32}> : () -> ui32
+    // CHECK-NEXT: %[[IMPORT_VAL:.+]] = emitc.subscript %[[IMPORTS]][%[[IDX]]] : (!emitc.ptr<!emitc.opaque<"iree_vm_function_t">>, ui32) -> !emitc.opaque<"iree_vm_function_t">
+    // CHECK-NEXT: %[[IMPORT:.+]] = emitc.apply "&"(%[[IMPORT_VAL]]) : (!emitc.opaque<"iree_vm_function_t">) -> !emitc.ptr<!emitc.opaque<"iree_vm_function_t">>
 
     // Create a variable for the function result.
     // CHECK-NEXT: %[[RESULT:.+]] = "emitc.variable"() <{value = #emitc.opaque<"">}> : () -> i32
@@ -95,8 +96,9 @@ vm.module @my_module {
     // Lookup import from module struct.
     // CHECK-NEXT: %[[IMPORTS:.+]] = emitc.call_opaque "EMITC_STRUCT_PTR_MEMBER"(%arg2) {args = [0 : index, #emitc.opaque<"imports">]}
     // CHECK-SAME:     : (!emitc.ptr<!emitc.opaque<"struct my_module_state_t">>) -> !emitc.ptr<!emitc.opaque<"iree_vm_function_t">>
-    // CHECK-NEXT: %[[IMPORT:.+]] = emitc.call_opaque "EMITC_ARRAY_ELEMENT_ADDRESS"(%[[IMPORTS]]) {args = [0 : index, 0 : ui32]}
-    // CHECK-SAME:     : (!emitc.ptr<!emitc.opaque<"iree_vm_function_t">>) -> !emitc.ptr<!emitc.opaque<"iree_vm_function_t">>
+    // CHECK-NEXT: %[[IDX:.+]] = "emitc.constant"() <{value = 0 : ui32}> : () -> ui32
+    // CHECK-NEXT: %[[IMPORT_VAL:.+]] = emitc.subscript %[[IMPORTS]][%[[IDX]]] : (!emitc.ptr<!emitc.opaque<"iree_vm_function_t">>, ui32) -> !emitc.opaque<"iree_vm_function_t">
+    // CHECK-NEXT: %[[IMPORT:.+]] = emitc.apply "&"(%[[IMPORT_VAL]]) : (!emitc.opaque<"iree_vm_function_t">) -> !emitc.ptr<!emitc.opaque<"iree_vm_function_t">>
 
     // Create a variable for the function result.
     // CHECK-NEXT: %[[RESULT:.+]] = "emitc.variable"() <{value = #emitc.opaque<"">}> : () -> i32
@@ -152,8 +154,9 @@ vm.module @my_module {
     // Lookup import from module struct.
     // CHECK-NEXT: %[[IMPORTS:.+]] = emitc.call_opaque "EMITC_STRUCT_PTR_MEMBER"(%arg2) {args = [0 : index, #emitc.opaque<"imports">]}
     // CHECK-SAME:     : (!emitc.ptr<!emitc.opaque<"struct my_module_state_t">>) -> !emitc.ptr<!emitc.opaque<"iree_vm_function_t">>
-    // CHECK-NEXT: %[[IMPORT:.+]] = emitc.call_opaque "EMITC_ARRAY_ELEMENT_ADDRESS"(%[[IMPORTS]]) {args = [0 : index, 0 : ui32]}
-    // CHECK-SAME:     : (!emitc.ptr<!emitc.opaque<"iree_vm_function_t">>) -> !emitc.ptr<!emitc.opaque<"iree_vm_function_t">>
+    // CHECK-NEXT: %[[IDX:.+]] = "emitc.constant"() <{value = 0 : ui32}> : () -> ui32
+    // CHECK-NEXT: %[[IMPORT_VAL:.+]] = emitc.subscript %[[IMPORTS]][%[[IDX]]] : (!emitc.ptr<!emitc.opaque<"iree_vm_function_t">>, ui32) -> !emitc.opaque<"iree_vm_function_t">
+    // CHECK-NEXT: %[[IMPORT:.+]] = emitc.apply "&"(%[[IMPORT_VAL]]) : (!emitc.opaque<"iree_vm_function_t">) -> !emitc.ptr<!emitc.opaque<"iree_vm_function_t">>
 
     // This holds the number of variadic arguments.
     // CHECK-NEXT: %[[NARGS:.+]] = "emitc.constant"() <{value = 2 : i32}> : () -> i32
@@ -185,8 +188,9 @@ vm.module @my_module {
     // Lookup import from module struct.
     // CHECK-NEXT: %[[IMPORTS:.+]] = emitc.call_opaque "EMITC_STRUCT_PTR_MEMBER"(%arg2) {args = [0 : index, #emitc.opaque<"imports">]}
     // CHECK-SAME:     : (!emitc.ptr<!emitc.opaque<"struct my_module_state_t">>) -> !emitc.ptr<!emitc.opaque<"iree_vm_function_t">>
-    // CHECK-NEXT: %[[IMPORT:.+]] = emitc.call_opaque "EMITC_ARRAY_ELEMENT_ADDRESS"(%[[IMPORTS]]) {args = [0 : index, 0 : ui32]}
-    // CHECK-SAME:     : (!emitc.ptr<!emitc.opaque<"iree_vm_function_t">>) -> !emitc.ptr<!emitc.opaque<"iree_vm_function_t">>
+    // CHECK-NEXT: %[[IDX:.+]] = "emitc.constant"() <{value = 0 : ui32}> : () -> ui32
+    // CHECK-NEXT: %[[IMPORT_VAL:.+]] = emitc.subscript %[[IMPORTS]][%[[IDX]]] : (!emitc.ptr<!emitc.opaque<"iree_vm_function_t">>, ui32) -> !emitc.opaque<"iree_vm_function_t">
+    // CHECK-NEXT: %[[IMPORT:.+]] = emitc.apply "&"(%[[IMPORT_VAL]]) : (!emitc.opaque<"iree_vm_function_t">) -> !emitc.ptr<!emitc.opaque<"iree_vm_function_t">>
 
     // This holds the number of variadic arguments.
     // CHECK-NEXT: %[[NARGS:.+]] = "emitc.constant"() <{value = 0 : i32}> : () -> i32
@@ -779,7 +783,9 @@ vm.module @my_module {
   // CHECK-LABEL: emitc.func private @my_module_call_fn
   vm.func @call_fn() -> i32 {
     // CHECK-NEXT: %[[IMPORTS:.+]] = emitc.call_opaque "EMITC_STRUCT_PTR_MEMBER"(%arg2) {args = [0 : index, #emitc.opaque<"imports">]} : (!emitc.ptr<!emitc.opaque<"struct my_module_state_t">>) -> !emitc.ptr<!emitc.opaque<"iree_vm_function_t">>
-    // CHECK-NEXT: %[[IMPORT:.+]] = emitc.call_opaque "EMITC_ARRAY_ELEMENT_ADDRESS"(%[[IMPORTS]]) {args = [0 : index, 0 : ui32]} : (!emitc.ptr<!emitc.opaque<"iree_vm_function_t">>) -> !emitc.ptr<!emitc.opaque<"iree_vm_function_t">>
+    // CHECK-NEXT: %[[IDX:.+]] = "emitc.constant"() <{value = 0 : ui32}> : () -> ui32
+    // CHECK-NEXT: %[[IMPORT_VAL:.+]] = emitc.subscript %[[IMPORTS]][%[[IDX]]] : (!emitc.ptr<!emitc.opaque<"iree_vm_function_t">>, ui32) -> !emitc.opaque<"iree_vm_function_t">
+    // CHECK-NEXT: %[[IMPORT:.+]] = emitc.apply "&"(%[[IMPORT_VAL]]) : (!emitc.opaque<"iree_vm_function_t">) -> !emitc.ptr<!emitc.opaque<"iree_vm_function_t">>
     // CHECK-NEXT: %[[MODULE:.+]] = emitc.call_opaque "EMITC_STRUCT_PTR_MEMBER"(%[[IMPORT]]) {args = [0 : index, #emitc.opaque<"module">]} : (!emitc.ptr<!emitc.opaque<"iree_vm_function_t">>) -> !emitc.ptr<!emitc.opaque<"iree_vm_module_t">>
     // CHECK-NEXT: %[[CONDITION0:.+]] = emitc.logical_not %[[MODULE]] : !emitc.ptr<!emitc.opaque<"iree_vm_module_t">>
     // CHECK-NEXT: %[[CONDITION1:.+]] = emitc.logical_not %[[CONDITION0]] : i1

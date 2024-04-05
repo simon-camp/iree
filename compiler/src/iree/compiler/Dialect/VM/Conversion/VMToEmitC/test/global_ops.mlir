@@ -34,9 +34,11 @@ vm.module @my_module {
   // CHECK-LABEL: emitc.func private @my_module_global_load_ref
   vm.func @global_load_ref() -> !vm.buffer {
     // CHECK: %[[A:.+]] = emitc.call_opaque "EMITC_STRUCT_PTR_MEMBER"(%arg2) {args = [0 : index, #emitc.opaque<"refs">]} : (!emitc.ptr<!emitc.opaque<"struct my_module_state_t">>) -> !emitc.ptr<!emitc.opaque<"iree_vm_ref_t">>
-    // CHECK: %[[B:.+]] = emitc.call_opaque "EMITC_ARRAY_ELEMENT_ADDRESS"(%[[A]]) {args = [0 : index, 0 : ui32]} : (!emitc.ptr<!emitc.opaque<"iree_vm_ref_t">>) -> !emitc.ptr<!emitc.opaque<"iree_vm_ref_t">>
-    // CHECK: %[[C:.+]] = emitc.call_opaque "iree_vm_type_def_as_ref"(%{{.+}}) : (!emitc.opaque<"iree_vm_type_def_t">) -> !emitc.opaque<"iree_vm_ref_type_t">
-    // CHECK: %{{.+}} = emitc.call_opaque "iree_vm_ref_retain_or_move_checked"(%[[B]], %[[C]], %arg3) {args = [false, 0 : index, 1 : index, 2 : index]} : (!emitc.ptr<!emitc.opaque<"iree_vm_ref_t">>, !emitc.opaque<"iree_vm_ref_type_t">, !emitc.ptr<!emitc.opaque<"iree_vm_ref_t">>) -> !emitc.opaque<"iree_status_t">
+    // CHECK: %[[B:.+]] = "emitc.constant"() <{value = 0 : ui32}> : () -> ui32
+    // CHECK: %[[C:.+]] = emitc.subscript %[[A]][%[[B]]] : (!emitc.ptr<!emitc.opaque<"iree_vm_ref_t">>, ui32) -> !emitc.opaque<"iree_vm_ref_t">
+    // CHECK: %[[D:.+]] = emitc.apply "&"(%[[C]]) : (!emitc.opaque<"iree_vm_ref_t">) -> !emitc.ptr<!emitc.opaque<"iree_vm_ref_t">>
+    // CHECK: %[[E:.+]] = emitc.call_opaque "iree_vm_type_def_as_ref"(%{{.+}}) : (!emitc.opaque<"iree_vm_type_def_t">) -> !emitc.opaque<"iree_vm_ref_type_t">
+    // CHECK: %{{.+}} = emitc.call_opaque "iree_vm_ref_retain_or_move_checked"(%[[D]], %[[E]], %arg3) {args = [false, 0 : index, 1 : index, 2 : index]} : (!emitc.ptr<!emitc.opaque<"iree_vm_ref_t">>, !emitc.opaque<"iree_vm_ref_type_t">, !emitc.ptr<!emitc.opaque<"iree_vm_ref_t">>) -> !emitc.opaque<"iree_status_t">
     %0 = vm.global.load.ref @g0 : !vm.buffer
     vm.return %0 : !vm.buffer
   }
@@ -50,9 +52,11 @@ vm.module @my_module {
   // CHECK-LABEL: emitc.func private @my_module_global_store_ref
   vm.func @global_store_ref(%arg0 : !vm.buffer) {
     // CHECK: %[[A:.+]] = emitc.call_opaque "EMITC_STRUCT_PTR_MEMBER"(%arg2) {args = [0 : index, #emitc.opaque<"refs">]} : (!emitc.ptr<!emitc.opaque<"struct my_module_state_t">>) -> !emitc.ptr<!emitc.opaque<"iree_vm_ref_t">>
-    // CHECK: %[[B:.+]] = emitc.call_opaque "EMITC_ARRAY_ELEMENT_ADDRESS"(%[[A]]) {args = [0 : index, 0 : ui32]} : (!emitc.ptr<!emitc.opaque<"iree_vm_ref_t">>) -> !emitc.ptr<!emitc.opaque<"iree_vm_ref_t">>
-    // CHECK: %[[C:.+]] = emitc.call_opaque "iree_vm_type_def_as_ref"(%{{.+}}) : (!emitc.opaque<"iree_vm_type_def_t">) -> !emitc.opaque<"iree_vm_ref_type_t">
-    // CHECK: %{{.+}} = emitc.call_opaque "iree_vm_ref_retain_or_move_checked"(%arg3, %[[C]], %[[B]]) {args = [false, 0 : index, 1 : index, 2 : index]} : (!emitc.ptr<!emitc.opaque<"iree_vm_ref_t">>, !emitc.opaque<"iree_vm_ref_type_t">, !emitc.ptr<!emitc.opaque<"iree_vm_ref_t">>) -> !emitc.opaque<"iree_status_t">
+    // CHECK: %[[B:.+]] = "emitc.constant"() <{value = 0 : ui32}> : () -> ui32
+    // CHECK: %[[C:.+]] = emitc.subscript %[[A]][%[[B]]] : (!emitc.ptr<!emitc.opaque<"iree_vm_ref_t">>, ui32) -> !emitc.opaque<"iree_vm_ref_t">
+    // CHECK: %[[D:.+]] = emitc.apply "&"(%[[C]]) : (!emitc.opaque<"iree_vm_ref_t">) -> !emitc.ptr<!emitc.opaque<"iree_vm_ref_t">>
+    // CHECK: %[[E:.+]] = emitc.call_opaque "iree_vm_type_def_as_ref"(%{{.+}}) : (!emitc.opaque<"iree_vm_type_def_t">) -> !emitc.opaque<"iree_vm_ref_type_t">
+    // CHECK: %{{.+}} = emitc.call_opaque "iree_vm_ref_retain_or_move_checked"(%arg3, %[[E]], %[[D]]) {args = [false, 0 : index, 1 : index, 2 : index]} : (!emitc.ptr<!emitc.opaque<"iree_vm_ref_t">>, !emitc.opaque<"iree_vm_ref_type_t">, !emitc.ptr<!emitc.opaque<"iree_vm_ref_t">>) -> !emitc.opaque<"iree_status_t">
     vm.global.store.ref %arg0, @g0_mut : !vm.buffer
     vm.return
   }

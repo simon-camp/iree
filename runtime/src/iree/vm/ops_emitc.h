@@ -7,7 +7,7 @@
 #ifndef IREE_VM_OPS_EMITC_H_
 #define IREE_VM_OPS_EMITC_H_
 
-// This file contains utility macros used for things that EmitC  can't handle
+// This file contains utility macros used for things that EmitC can't handle
 // directly.
 
 // Assign a value through a pointer variable
@@ -39,14 +39,5 @@
 // Assign a value to a member of a pointer to a struct
 #define EMITC_STRUCT_PTR_MEMBER_ASSIGN(struct, member, value) \
   (struct)->member = (value)
-
-// Get an array element
-#define EMITC_ARRAY_ELEMENT(array, index) (array)[index]
-
-// Get the address of an array element
-#define EMITC_ARRAY_ELEMENT_ADDRESS(array, index) &(array)[index]
-
-// Assign a value to an array at a given index
-#define EMITC_ARRAY_ELEMENT_ASSIGN(array, index, value) (array)[index] = (value)
 
 #endif  // IREE_VM_OPS_EMITC_H_
