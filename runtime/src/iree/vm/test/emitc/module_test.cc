@@ -34,6 +34,7 @@ using namespace std;
 #include "iree/vm/test/emitc/global_ops_f32.h"
 #include "iree/vm/test/emitc/global_ops_i64.h"
 #include "iree/vm/test/emitc/list_ops.h"
+#include "iree/vm/test/emitc/list_ops_i64.h"
 #include "iree/vm/test/emitc/list_variant_ops.h"
 #include "iree/vm/test/emitc/ref_ops.h"
 #include "iree/vm/test/emitc/shift_ops.h"
@@ -89,6 +90,7 @@ std::vector<TestParams> GetModuleTestParams() {
       {global_ops_f32_descriptor_, global_ops_f32_create},
       {global_ops_i64_descriptor_, global_ops_i64_create},
       {list_ops_descriptor_, list_ops_create},
+      {list_ops_i64_descriptor_, list_ops_i64_create},
       {list_variant_ops_descriptor_, list_variant_ops_create},
       {ref_ops_descriptor_, ref_ops_create},
       {shift_ops_descriptor_, shift_ops_create},

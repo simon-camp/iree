@@ -37,6 +37,7 @@ iree_cc_test(
     ::global_ops_f32
     ::global_ops_i64
     ::list_ops
+    ::list_ops_i64
     ::list_variant_ops
     ::ref_ops
     ::shift_ops
@@ -284,6 +285,19 @@ iree_c_module(
     "../list_ops.mlir"
   H_FILE_OUTPUT
     "list_ops.h"
+  FLAGS
+    "--compile-mode=vm"
+  COMPILE_TOOL
+    iree-compile
+)
+
+iree_c_module(
+  NAME
+    list_ops_i64
+  SRC
+    "../list_ops_i64.mlir"
+  H_FILE_OUTPUT
+    "list_ops_i64.h"
   FLAGS
     "--compile-mode=vm"
   COMPILE_TOOL
