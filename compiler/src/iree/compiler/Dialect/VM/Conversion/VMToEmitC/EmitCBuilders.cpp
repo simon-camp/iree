@@ -44,37 +44,54 @@ std::string mapPreprocessorDirective(PreprocessorDirective directive) {
 }
 } // namespace
 
-Value allocateVariable(OpBuilder builder, Location location, Type type,
-                       Attribute initializer) {
-  return builder
-      .create<emitc::VariableOp>(
-          /*location=*/location,
-          /*resultType=*/type,
-          /*value=*/initializer)
-      .getResult();
+TypedValue<emitc::LValueType> allocateVariable(OpBuilder builder,
+                                               Location location, Type type,
+                                               Attribute initializer) {
+  Type varType = emitc::LValueType::get(type);
+  Value result = builder
+                     .create<emitc::VariableOp>(
+                         /*location=*/location,
+                         /*resultType=*/varType,
+                         /*value=*/initializer)
+                     .getResult();
+  return cast<TypedValue<emitc::LValueType>>(result);
 }
 
-Value allocateVariable(OpBuilder builder, Location location, Type type,
-                       std::optional<StringRef> initializer) {
+TypedValue<emitc::LValueType>
+allocateVariable(OpBuilder builder, Location location, Type type,
+                 std::optional<StringRef> initializer) {
   auto ctx = builder.getContext();
   return allocateVariable(
       builder, location, type,
       emitc::OpaqueAttr::get(ctx, initializer.value_or("")));
 }
 
-Value addressOf(OpBuilder builder, Location location, Value operand) {
+TypedValue<emitc::PointerType>
+addressOf(OpBuilder builder, Location location,
+          TypedValue<emitc::LValueType> operand) {
   auto ctx = builder.getContext();
 
-  return builder
-      .create<emitc::ApplyOp>(
-          /*location=*/location,
-          /*result=*/emitc::PointerType::get(operand.getType()),
-          /*applicableOperator=*/StringAttr::get(ctx, "&"),
-          /*operand=*/operand)
-      .getResult();
+  Value result =
+      builder
+          .create<emitc::ApplyOp>(
+              /*location=*/location,
+              /*result=*/
+              emitc::PointerType::get(operand.getType().getValueType()),
+              /*applicableOperator=*/StringAttr::get(ctx, "&"),
+              /*operand=*/operand)
+          .getResult();
+  return cast<TypedValue<emitc::PointerType>>(result);
 }
 
-Value contentsOf(OpBuilder builder, Location location, Value operand) {
+TypedValue<emitc::LValueType> asLValue(OpBuilder builder, Location location,
+                                       Value value) {
+  auto var = allocateVariable(builder, location, value.getType());
+  builder.create<emitc::AssignOp>(location, var, value);
+  return var;
+}
+
+Value contentsOf(OpBuilder builder, Location location,
+                 TypedValue<emitc::PointerType> operand) {
   auto ctx = builder.getContext();
 
   Type type = operand.getType();
@@ -115,8 +132,9 @@ Value sizeOf(OpBuilder builder, Location loc, Attribute attr) {
       .getResult(0);
 }
 
-void memcpy(OpBuilder builder, Location location, Value dest, Value src,
-            Value count) {
+void memcpy(OpBuilder builder, Location location,
+            TypedValue<emitc::PointerType> dest,
+            TypedValue<emitc::PointerType> src, Value count) {
   auto ctx = builder.getContext();
   builder.create<emitc::CallOpaqueOp>(
       /*location=*/location,
@@ -127,8 +145,8 @@ void memcpy(OpBuilder builder, Location location, Value dest, Value src,
       /*operands=*/ArrayRef<Value>{dest, src, count});
 }
 
-void memset(OpBuilder builder, Location location, Value dest, int ch,
-            Value count) {
+void memset(OpBuilder builder, Location location,
+            TypedValue<emitc::PointerType> dest, int ch, Value count) {
   auto ctx = builder.getContext();
   builder.create<emitc::CallOpaqueOp>(
       /*location=*/location,
@@ -205,6 +223,14 @@ void arrayElementAssign(OpBuilder builder, Location location, Value array,
       /*operands=*/ArrayRef<Value>{array, value});
 }
 
+Value loadLValue(OpBuilder builder, Location location,
+                 TypedValue<emitc::LValueType> operand) {
+  return builder
+      .create<emitc::LoadOp>(location, operand.getType().getValueType(),
+                             operand)
+      .getResult();
+}
+
 void structDefinition(OpBuilder builder, Location location,
                       StringRef structName, ArrayRef<StructField> fields) {
   auto ctx = builder.getContext();
@@ -237,7 +263,8 @@ Value structMember(OpBuilder builder, Location location, Type type,
 }
 
 void structMemberAssign(OpBuilder builder, Location location,
-                        StringRef memberName, Value operand, Value data) {
+                        StringRef memberName,
+                        TypedValue<emitc::LValueType> operand, Value data) {
   auto ctx = builder.getContext();
   builder.create<emitc::CallOpaqueOp>(
       /*location=*/location,
@@ -252,7 +279,8 @@ void structMemberAssign(OpBuilder builder, Location location,
 }
 
 void structMemberAssign(OpBuilder builder, Location location,
-                        StringRef memberName, Value operand, StringRef data) {
+                        StringRef memberName,
+                        TypedValue<emitc::LValueType> operand, StringRef data) {
   auto ctx = builder.getContext();
   builder.create<emitc::CallOpaqueOp>(
       /*location=*/location,
@@ -282,8 +310,27 @@ Value structPtrMember(OpBuilder builder, Location location, Type type,
       .getResult(0);
 }
 
+TypedValue<emitc::PointerType>
+structMemberAddress(OpBuilder builder, Location location, Type type,
+                    StringRef memberName,
+                    TypedValue<emitc::LValueType> operand) {
+  auto ctx = builder.getContext();
+  Value result =
+      builder
+          .create<emitc::CallOpaqueOp>(
+              /*location=*/location, /*type=*/type,                /*callee=*/
+              StringAttr::get(ctx, "EMITC_STRUCT_MEMBER_ADDRESS"), /*args=*/
+              ArrayAttr::get(ctx, {builder.getIndexAttr(0),
+                                   emitc::OpaqueAttr::get(ctx, memberName)}),
+              /*templateArgs=*/ArrayAttr{},
+              /*operands=*/ArrayRef<Value>{operand})
+          .getResult(0);
+  return cast<TypedValue<emitc::PointerType>>(result);
+}
+
 void structPtrMemberAssign(OpBuilder builder, Location location,
-                           StringRef memberName, Value operand, Value data) {
+                           StringRef memberName,
+                           TypedValue<emitc::LValueType> operand, Value data) {
   auto ctx = builder.getContext();
   builder.create<emitc::CallOpaqueOp>(
       /*location=*/location,

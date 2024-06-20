@@ -81,25 +81,36 @@ enum BinaryOperator {
 Value unaryOperator(OpBuilder builder, Location location, UnaryOperator op,
                     Value operand, Type resultType);
 
-Value allocateVariable(OpBuilder builder, Location location, Type type,
-                       Attribute initializer);
+TypedValue<emitc::LValueType> allocateVariable(OpBuilder builder,
+                                               Location location, Type type,
+                                               Attribute initializer);
 
-Value allocateVariable(OpBuilder builder, Location location, Type type,
-                       std::optional<StringRef> initializer = std::nullopt);
+TypedValue<emitc::LValueType>
+allocateVariable(OpBuilder builder, Location location, Type type,
+                 std::optional<StringRef> initializer = std::nullopt);
 
-Value addressOf(OpBuilder builder, Location location, Value operand);
+TypedValue<emitc::PointerType> addressOf(OpBuilder builder, Location location,
+                                         TypedValue<emitc::LValueType> operand);
 
-Value contentsOf(OpBuilder builder, Location location, Value operand);
+/// Materialize a value as an emitc LValue by assigning to a local variable. As
+/// this generates a variable declaration followed by an assignment padding
+/// bytes of the result have an indetermined value.
+TypedValue<emitc::LValueType> asLValue(OpBuilder builder, Location location,
+                                       Value value);
+
+Value contentsOf(OpBuilder builder, Location location,
+                 TypedValue<emitc::PointerType> operand);
 
 Value sizeOf(OpBuilder builder, Location location, Attribute attr);
 
 Value sizeOf(OpBuilder builder, Location location, Value value);
 
-void memcpy(OpBuilder builder, Location location, Value dest, Value src,
-            Value count);
+void memcpy(OpBuilder builder, Location location,
+            TypedValue<emitc::PointerType> dest,
+            TypedValue<emitc::PointerType> src, Value count);
 
-void memset(OpBuilder builder, Location location, Value dest, int ch,
-            Value count);
+void memset(OpBuilder builder, Location location,
+            TypedValue<emitc::PointerType> dest, int ch, Value count);
 
 Value arrayElement(OpBuilder builder, Location location, Type type,
                    size_t index, Value operand);
@@ -113,23 +124,34 @@ Value arrayElementAddress(OpBuilder builder, Location location, Type type,
 void arrayElementAssign(OpBuilder builder, Location location, Value array,
                         size_t index, Value value);
 
+Value loadLValue(OpBuilder builder, Location location,
+                 TypedValue<emitc::LValueType> operand);
+
 void structDefinition(OpBuilder builder, Location location,
                       StringRef structName, ArrayRef<StructField> fields);
 
 Value structMember(OpBuilder builder, Location location, Type type,
                    StringRef memberName, Value operand);
 
-void structMemberAssign(OpBuilder builder, Location location,
-                        StringRef memberName, Value operand, Value data);
+TypedValue<emitc::PointerType>
+structMemberAddress(OpBuilder builder, Location location, Type type,
+                    StringRef memberName,
+                    TypedValue<emitc::LValueType> operand);
 
 void structMemberAssign(OpBuilder builder, Location location,
-                        StringRef memberName, Value operand, StringRef data);
+                        StringRef memberName,
+                        TypedValue<emitc::LValueType> operand, Value data);
+
+void structMemberAssign(OpBuilder builder, Location location,
+                        StringRef memberName,
+                        TypedValue<emitc::LValueType> operand, StringRef data);
 
 Value structPtrMember(OpBuilder builder, Location location, Type type,
                       StringRef memberName, Value operand);
 
 void structPtrMemberAssign(OpBuilder builder, Location location,
-                           StringRef memberName, Value operand, Value data);
+                           StringRef memberName,
+                           TypedValue<emitc::LValueType> operand, Value data);
 
 Value ireeMakeCstringView(OpBuilder builder, Location location,
                           std::string str);
