@@ -106,7 +106,10 @@ typedef iree_status_t(IREE_API_PTR* iree_vm_native_function_target2_t)(
             iree_vm_abi_##arg_types##_expected_size(args_storage)) {           \
       return iree_make_status(                                                 \
           IREE_STATUS_INVALID_ARGUMENT,                                        \
-          "argument storage size mismatch for type '" #arg_types "'");         \
+          "argument storage size mismatch for type '" #arg_types               \
+          "', expected %d, but got %d",                                        \
+          iree_vm_abi_##arg_types##_expected_size(args_storage),               \
+          (int)args_storage.data_length);                                      \
     }                                                                          \
     if (rets_storage.data == NULL) {                                           \
       return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,                    \
@@ -118,7 +121,10 @@ typedef iree_status_t(IREE_API_PTR* iree_vm_native_function_target2_t)(
             iree_vm_abi_##ret_types##_expected_size(rets_storage)) {           \
       return iree_make_status(                                                 \
           IREE_STATUS_INVALID_ARGUMENT,                                        \
-          "result storage size mismatch for type '" #ret_types "'");           \
+          "result storage size mismatch for type '" #ret_types                 \
+          "', expected %d, but hot %d",                                        \
+          iree_vm_abi_##ret_types##_expected_size(rets_storage),               \
+          (int)rets_storage.data_length);                                      \
     }                                                                          \
     if (iree_vm_abi_##arg_types##_checked_deref(args_storage) == NULL) {       \
       return iree_make_status(                                                 \
