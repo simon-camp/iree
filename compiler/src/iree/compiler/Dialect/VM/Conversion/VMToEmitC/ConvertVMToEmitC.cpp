@@ -2237,6 +2237,16 @@ private:
                 /*operands=*/ArrayRef<Value>{size})
             .getResult(0);
 
+    builder.create<emitc::CallOpaqueOp>(
+        /*location=*/loc,
+        /*type=*/TypeRange{},
+        /*callee=*/"printf",
+        /*operands=*/ArrayRef<Value>{size, byteSpanDataVoid},
+        /*args=*/
+        builder.getArrayAttr(
+            {emitc::OpaqueAttr::get(ctx, "\"alloca(%d) -> %p\\n\""),
+             builder.getIndexAttr(0), builder.getIndexAttr(1)}));
+
     // uint8_t *byteSpan_data = (uint8_t*)byteSpan_data_void;
     Type bytePtr = emitc::PointerType::get(builder.getIntegerType(8, false));
     auto byteSpanData = builder
