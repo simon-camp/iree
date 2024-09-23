@@ -34,6 +34,10 @@
 #define IREE_VM_ABI_FIXED_STRUCT_IMPL(struct_type, types, body)        \
   typedef struct iree_vm_abi_##types##_t body IREE_ATTRIBUTE_PACKED    \
       struct_type;                                                     \
+  static inline int iree_vm_abi_##types##_expected_size(               \
+      iree_byte_span_t buffer) {                                       \
+    return sizeof(struct_type);                                        \
+  }                                                                    \
   static inline struct_type* iree_vm_abi_##types##_checked_deref(      \
       iree_byte_span_t buffer) {                                       \
     return IREE_LIKELY(buffer.data_length == sizeof(struct_type))      \
@@ -49,6 +53,12 @@
                                     body)                                     \
   typedef struct iree_vm_abi_##types##_t body IREE_ATTRIBUTE_PACKED           \
       struct_type;                                                            \
+  static inline int iree_vm_abi_##types##_expected_size(                      \
+      iree_byte_span_t buffer) {                                              \
+    return sizeof(struct_type) +                                              \
+           ((const struct_type*)buffer.data)->vla_count *                     \
+               IREE_VM_ABI_FIELD_SIZE(struct_type, vla_field[0]);             \
+  }                                                                           \
   static inline struct_type* iree_vm_abi_##types##_checked_deref(             \
       iree_byte_span_t buffer) {                                              \
     return IREE_LIKELY(buffer.data_length >= sizeof(struct_type)) &&          \
@@ -86,15 +96,57 @@ typedef iree_status_t(IREE_API_PTR* iree_vm_native_function_target2_t)(
       iree_byte_span_t rets_storage,                                           \
       iree_vm_native_function_target2_t target_fn, void* IREE_RESTRICT module, \
       void* IREE_RESTRICT module_state) {                                      \
+    if (args_storage.data == NULL) {                                           \
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,                    \
+                              "argument storage is NULL for type '" #arg_types \
+                              "'");                                            \
+    }                                                                          \
+    if (iree_vm_abi_##arg_types##_expected_size(args_storage) >= 0 &&          \
+        args_storage.data_length !=                                            \
+            iree_vm_abi_##arg_types##_expected_size(args_storage)) {           \
+      return iree_make_status(                                                 \
+          IREE_STATUS_INVALID_ARGUMENT,                                        \
+          "argument storage size mismatch for type '" #arg_types               \
+          "', expected %d, but got %d",                                        \
+          iree_vm_abi_##arg_types##_expected_size(args_storage),               \
+          (int)args_storage.data_length);                                      \
+    }                                                                          \
+    if (rets_storage.data == NULL) {                                           \
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,                    \
+                              "result storage is NULL for type '" #ret_types   \
+                              "'");                                            \
+    }                                                                          \
+    if (iree_vm_abi_##ret_types##_expected_size(rets_storage) >= 0 &&          \
+        rets_storage.data_length !=                                            \
+            iree_vm_abi_##ret_types##_expected_size(rets_storage)) {           \
+      return iree_make_status(                                                 \
+          IREE_STATUS_INVALID_ARGUMENT,                                        \
+          "result storage size mismatch for type '" #ret_types                 \
+          "', expected %d, but hot %d",                                        \
+          iree_vm_abi_##ret_types##_expected_size(rets_storage),               \
+          (int)rets_storage.data_length);                                      \
+    }                                                                          \
+    if (iree_vm_abi_##arg_types##_checked_deref(args_storage) == NULL) {       \
+      return iree_make_status(                                                 \
+          IREE_STATUS_INVALID_ARGUMENT,                                        \
+          "argument storage cast error for type '" #arg_types "'");            \
+    }                                                                          \
+    if (iree_vm_abi_##ret_types##_checked_deref(rets_storage) == NULL) {       \
+      return iree_make_status(                                                 \
+          IREE_STATUS_INVALID_ARGUMENT,                                        \
+          "result storage cast error for type '" #ret_types "'");              \
+    }                                                                          \
     const IREE_VM_ABI_TYPE_NAME(arg_types)* args =                             \
         iree_vm_abi_##arg_types##_checked_deref(args_storage);                 \
     IREE_VM_ABI_TYPE_NAME(ret_types)* rets =                                   \
         iree_vm_abi_##ret_types##_checked_deref(rets_storage);                 \
-    if (IREE_UNLIKELY(                                                         \
-            !((flags & IREE_VM_NATIVE_FUNCTION_CALL_RESUME) || args) ||        \
-            !rets)) {                                                          \
+    if (!((flags & IREE_VM_NATIVE_FUNCTION_CALL_RESUME) || args)) {            \
       return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,                    \
-                              "argument/result signature mismatch");           \
+                              "argument signature mismatch");                  \
+    }                                                                          \
+    if (!rets) {                                                               \
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,                    \
+                              "result signature mismatch");                    \
     }                                                                          \
     iree_vm_abi_##ret_types##_reset(rets);                                     \
     return target_fn(stack, module, module_state, args, rets);                 \
@@ -163,6 +215,9 @@ typedef iree_status_t(IREE_API_PTR* iree_vm_native_function_target2_t)(
 typedef struct iree_vm_abi_v_t {
   int unused;
 } iree_vm_abi_v_t;
+static inline int iree_vm_abi_v_expected_size(iree_byte_span_t buffer) {
+  return -1;
+}
 static inline iree_vm_abi_v_t* iree_vm_abi_v_checked_deref(
     iree_byte_span_t buffer) {
   return (iree_vm_abi_v_t*)buffer.data;
