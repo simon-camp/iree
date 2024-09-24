@@ -35,6 +35,9 @@ iree_runtime_cc_test(
         ":global_ops_f32",
         ":global_ops_i64",
         ":list_ops",
+        ":list_ops_f32",
+        ":list_ops_f64",
+        ":list_ops_i64",
         ":list_variant_ops",
         ":ref_ops",
         ":shift_ops",
@@ -218,6 +221,33 @@ iree_c_module(
         "--compile-mode=vm",
     ],
     h_file_output = "list_ops.h",
+)
+
+iree_c_module(
+    name = "list_ops_f32",
+    src = "//runtime/src/iree/vm/test:list_ops_f32.mlir",
+    flags = [
+        "--compile-mode=vm",
+    ],
+    h_file_output = "list_ops_f32.h",
+)
+
+iree_c_module(
+    name = "list_ops_f64",
+    src = "//runtime/src/iree/vm/test:list_ops_64.mlir",
+    flags = [
+        "--compile-mode=vm",
+    ],
+    h_file_output = "list_ops_f64.h",
+)
+
+iree_c_module(
+    name = "list_ops_i64",
+    src = "//runtime/src/iree/vm/test:list_ops_i64.mlir",
+    flags = [
+        "--compile-mode=vm",
+    ],
+    h_file_output = "list_ops_i64.h",
 )
 
 iree_c_module(

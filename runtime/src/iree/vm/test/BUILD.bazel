@@ -50,6 +50,8 @@ iree_c_embed_data(
         ":global_ops_f64.vmfb",
         ":global_ops_i64.vmfb",
         ":list_ops.vmfb",
+        ":list_ops_f32.vmfb",
+        ":list_ops_f64.vmfb",
         ":list_ops_i64.vmfb",
         ":list_variant_ops.vmfb",
         ":ref_ops.vmfb",
@@ -258,6 +260,22 @@ iree_bytecode_module(
 iree_bytecode_module(
     name = "list_ops",
     src = "list_ops.mlir",
+    flags = [
+        "--compile-mode=vm",
+    ],
+)
+
+iree_bytecode_module(
+    name = "list_ops_f32",
+    src = "list_ops_f32.mlir",
+    flags = [
+        "--compile-mode=vm",
+    ],
+)
+
+iree_bytecode_module(
+    name = "list_ops_f64",
+    src = "list_ops_f64.mlir",
     flags = [
         "--compile-mode=vm",
     ],

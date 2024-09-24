@@ -4047,7 +4047,15 @@ class ListGetOpConversion : public EmitCConversionPattern<OpTy> {
         TypeSwitch<Operation *, std::pair<std::optional<StringRef>,
                                           std::optional<StringRef>>>(
             getOp.getOperation())
-            .Case<IREE::VM::ListGetI32Op>([&](auto op) {
+            .Case<IREE::VM::ListGetF32Op>([&](auto op) {
+              return std::make_pair(StringRef("IREE_VM_VALUE_TYPE_F32"),
+                                    StringRef("iree_vm_value_get_f32"));
+            })
+            .template Case<IREE::VM::ListGetF64Op>([&](auto op) {
+              return std::make_pair(StringRef("IREE_VM_VALUE_TYPE_F64"),
+                                    StringRef("iree_vm_value_get_f64"));
+            })
+            .template Case<IREE::VM::ListGetI32Op>([&](auto op) {
               return std::make_pair(StringRef("IREE_VM_VALUE_TYPE_I32"),
                                     StringRef("iree_vm_value_get_i32"));
             })
@@ -4276,7 +4284,11 @@ class ListSetOpConversion : public EmitCConversionPattern<OpTy> {
 
     std::optional<StringRef> valueConstructor =
         TypeSwitch<Operation *, std::optional<StringRef>>(setOp.getOperation())
-            .Case<IREE::VM::ListSetI32Op>(
+            .Case<IREE::VM::ListSetF32Op>(
+                [&](auto op) { return StringRef("iree_vm_value_make_f32"); })
+            .template Case<IREE::VM::ListSetF64Op>(
+                [&](auto op) { return StringRef("iree_vm_value_make_f64"); })
+            .template Case<IREE::VM::ListSetI32Op>(
                 [&](auto op) { return StringRef("iree_vm_value_make_i32"); })
             .template Case<IREE::VM::ListSetI64Op>(
                 [&](auto op) { return StringRef("iree_vm_value_make_i64"); })
@@ -4425,9 +4437,13 @@ void populateVMToEmitCPatterns(ConversionTarget &conversionTarget,
     GlobalLoadStoreRefOpConversion<IREE::VM::GlobalLoadRefOp>,
     GlobalLoadStoreRefOpConversion<IREE::VM::GlobalStoreRefOp>,
     ImportResolvedOpConversion,
+    ListGetOpConversion<IREE::VM::ListGetF32Op>,
+    ListGetOpConversion<IREE::VM::ListGetF64Op>,
     ListGetOpConversion<IREE::VM::ListGetI32Op>,
     ListGetOpConversion<IREE::VM::ListGetI64Op>,
     ListGetRefOpConversion,
+    ListSetOpConversion<IREE::VM::ListSetF32Op>,
+    ListSetOpConversion<IREE::VM::ListSetF64Op>,
     ListSetOpConversion<IREE::VM::ListSetI32Op>,
     ListSetOpConversion<IREE::VM::ListSetI64Op>,
     ListSetRefOpConversion,
